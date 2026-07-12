@@ -107,16 +107,26 @@ gpu off                                                 # back to the offline mi
 
 ## What runs today, and what's next
 
-**Running now (`mor/`):** the Hall (one shared, plain-English-only transcript,
-streamed live and kept on disk), the wake order, the scheduler and the closed
-council loop, `light`/`dark`, the Chant (written at dusk, sung first at dawn), the
-two walls (written nightly, persisted per inhabitant), the chain-of-command gate
-(the Warrior only crosses to a domain the Master has `authorize`d), and the
-Wizard's **Theory of the World** (a JSON map that grows with every sortie).
+MoR stands on **its own engine** (`mor/engine/`) — no framework underneath, Python
+standard library only. It was cut from the wisdom of the Hermes harness (which lives
+on in its own repo), but nothing of Hermes is vendored here; the realm runs on itself.
 
-**Next**, per **[The Realm §10](books/THE_REALM.md#10-what-gets-retired-what-survives-whats-new)**:
-give each face a real Docker body on the dome (the embodiment already sketched in the
-Hermes `village.py`), and write the three personas into `personas/{wizard,general,warrior}.md`
-— they're living seeds; the walls grow them from there.
+**Running now:**
+- the **Hall** (one shared, plain-English-only transcript, streamed live, kept on
+  disk) with the **bounded view** (a long day folds its middle, keeps the recent tail)
+- the wake order, the scheduler, the closed council loop, `light`/`dark`
+- the **engine**: a real think→act loop (a face reasons, calls tools, reads results,
+  speaks), with the reflex that pushes it to think when it acts without reasoning
+- the **bodies**: at `light` each face gets a real container on the dome (DNA mounted,
+  the Warrior's body alone wired to egress), harvested at `dark`
+- the **gate + taint rail**: the Warrior only crosses to a Master-`authorize`d domain,
+  and anything pulled from outside is flagged for the Master's leave
+- the **Chant**, the **two walls**, and the Wizard's **Theory of the World** (grown
+  from real sorties)
+
+**Next** (cut MoR-native from the Hermes reference as they land): the verify/skeptic
+reflex (the General re-running the Wizard's claims, not just flagging them), a wider
+toolbox, and `gpu` polish. And the personas are yours — write them into
+`personas/{wizard,general,warrior}.md`; they're living seeds the walls grow from there.
 
 *Here begins the Realm. It is written down so it will not be lost.*
