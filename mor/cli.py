@@ -32,7 +32,7 @@ HELP = f"""{ui.bold('Commands')}
   {ui.cyan('dark')} / {ui.cyan('0')}       end the day — walls written, the Chant sung, sleep
   {ui.cyan('<text>')}          (while awake) speak into the Hall — the Wizard catches it
   {ui.cyan('authorize')} <d>   open the gate for a domain (the Master's leave to egress)
-  {ui.cyan('gpu')} ...         ssh <ssh… -L p:h:p> · model <id> · serve <url> · status · off
+  {ui.cyan('gpu')} ...         ssh <ssh… -L p:h:p> · test · model <id> · serve <url> · status · off
   {ui.cyan('persona')} <role>  write who a face is — wizard · general · warrior (seed → yours)
   {ui.cyan('space')} ...       (show) · use <name> · new <name> · list
   {ui.cyan('help')} / {ui.cyan('?')}       this
@@ -129,6 +129,15 @@ def _gpu(rest: str) -> None:
         print(ui.green(f"  ⛓  tunnel up (pid {_TUNNEL.pid}) — the oracle is served at {base_url}"))
         print(ui.dim(f"     model: {state['model']}  ·  set it with `gpu model <id>` if your "
                      "server needs an exact name.  Takes the throne at next `light`."))
+    elif sub in ("test", "ping"):
+        if not state.get("served"):
+            print(ui.yellow("  no served oracle — `gpu ssh <ssh… -L port:host:port>` first."))
+            return
+        from mor.mind import ServedMind
+        print(ui.dim(f"  knocking on the oracle at {state.get('base_url')} ..."))
+        reply = ServedMind(state).speak("You are a terse test probe.",
+                                        "Reply with exactly one word: pong")
+        print("  " + ui.green("oracle answered: ") + reply[:400])
     elif sub == "model":
         if len(parts) < 2:
             print(ui.yellow("usage: gpu model <model-id>"))

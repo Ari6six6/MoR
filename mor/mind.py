@@ -53,10 +53,14 @@ class ServedMind:
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                payload = json.loads(resp.read().decode())
+                payload = json.loads(resp.read().decode("utf-8", "replace"))
             return (payload["choices"][0]["message"]["content"] or "").strip()
-        except (urllib.error.URLError, KeyError, IndexError, ValueError) as e:
-            return f"(the oracle is unreachable — {type(e).__name__}; check `gpu status`)"
+        except Exception as e:  # noqa: BLE001
+            # A flaky oracle must NEVER crash the realm mid-day — the agent simply
+            # reports that the oracle didn't answer, and the day goes on.
+            detail = str(e).strip() or type(e).__name__
+            return (f"(the oracle did not answer — {type(e).__name__}: {detail[:140]}. "
+                    "Try `gpu test`, or check the model server on the box.)")
 
 
 # --------------------------------------------------------------------------
