@@ -200,14 +200,16 @@ def _gpu(rest: str) -> None:
         if not state.get("served"):
             print(ui.yellow("  no served oracle — `gpu ssh <ssh… -L port:host:port>` first."))
             return
-        from mor.mind import ServedMind
+        from mor.engine import ServedBackend
         stop = threading.Event()
         th = threading.Thread(target=_spinner, args=(stop, "knocking on the oracle"),
                               daemon=True)
         th.start()
         try:
-            reply = ServedMind(state).speak("You are a terse test probe.",
-                                            "Reply with exactly one word: pong")
+            res = ServedBackend(state).chat(
+                [{"role": "system", "content": "You are a terse test probe."},
+                 {"role": "user", "content": "Reply with exactly one word: pong"}])
+            reply = res.content or "(no content)"
         finally:
             stop.set()
             th.join(timeout=1)

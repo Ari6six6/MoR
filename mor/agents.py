@@ -17,9 +17,14 @@ import json
 import re
 
 from mor import world
-from mor.mind import StubMind, short
+from mor.engine import ToolContext, default_tools, think_and_act
 
 ROLES = ("wizard", "general", "warrior")
+
+
+def short(text: str, n: int = 60) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
 
 # The map every inhabitant holds — superposition, stated plainly.
 ROSTER = """\
@@ -119,14 +124,23 @@ _USER_TASK = {
 }
 
 
-def line(mind, space, role: str, kind: str, heard: str = "", hall_tail: str = "") -> str:
-    """Ask one face to speak once for a given beat of the day."""
-    if isinstance(mind, StubMind):
-        return mind.speak("", json.dumps({"role": role, "kind": kind, "heard": heard}))
+def line(backend, space, role: str, kind: str, heard: str = "", hall_tail: str = "",
+         log=lambda *_: None) -> str:
+    """Ask one face to speak once for a given beat of the day — through the engine.
+
+    The face gets its voice (persona + roster + walls + world + Hall tail) and its
+    hands (workspace tools; the Warrior alone gets egress), and thinks→acts until
+    it says its line. The offline mind short-circuits to one in-character line.
+    """
     system = _build_system(space, role, hall_tail)
     user = _USER_TASK.get(kind, "Speak one plain-English line in the Hall.").format(
         heard=short(heard, 200))
-    return mind.speak(system, user)
+    ctx = ToolContext(workspace=space.root / "population" / role / "workspace",
+                      space=space, can_egress=(role == "warrior"))
+    spoken, _tainted = think_and_act(
+        backend, role=role, kind=kind, heard=heard, system=system, user=user,
+        tools=default_tools(ctx), ctx=ctx, log=log)
+    return spoken
 
 
 # --------------------------------------------------------------------------
