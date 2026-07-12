@@ -111,8 +111,16 @@ class Space:
         return self.root / "gate.json"
 
     # --- gate (egress allowlist) ----------------------------------------
+    # The gate is the always-lit safety rail (the Eighth Evangelism, the taint
+    # boundary): the Warrior crosses only to a domain the Master has authorized.
+    # `authorize *` opens it wide in one word — full power, zero friction — for a
+    # Master who wants nothing between him and the world.
     def allowlist(self) -> list:
         return load_json(self.gate_path(), {"domains": []}).get("domains", [])
+
+    def egress_allowed(self, domain: str) -> bool:
+        al = self.allowlist()
+        return "*" in al or domain in al
 
     def authorize(self, domain: str) -> None:
         data = load_json(self.gate_path(), {"domains": []})

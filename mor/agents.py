@@ -152,7 +152,7 @@ def warrior_sortie(space, order_text: str) -> dict:
         return {"report": "No outside target in the order — I stayed in and scouted "
                           "what we already hold. Nothing left the dome.", "escalate": None}
     domain = world._domain_of(target)
-    if domain not in space.allowlist():
+    if not space.egress_allowed(domain):
         return {"report": f"The order points outside, to {domain}, but the gate is not "
                           f"open for it. I need the Master's leave before I cross.",
                 "escalate": domain}

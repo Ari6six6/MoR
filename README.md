@@ -40,6 +40,10 @@ Read them in order. They are the realm's scripture — the agents read them too.
    spec of the dome, the Hall, the day, the roles, and the rules. **Start here to
    build.**
 
+And the record: **[The Founding](books/THE_FOUNDING.md)** — the verbatim transcript
+of the conversation that designed and built the realm, kept whole in the covenant of
+Genesis.
+
 ---
 
 ## Run it
@@ -61,6 +65,18 @@ dark                # end the day — walls written, the Chant sung, sleep
 ```
 
 Want to watch a whole day move without typing? `./hermes --demo`.
+
+### Full power by default
+
+The realm ships at **full power** — every faculty is on the moment you enter;
+there are no opt-in flags to raise. The one rail that stays lit (by design — it's
+your General's whole job, and the taint boundary of the Eighth Evangelism) is the
+egress gate: the Warrior crosses only to a domain the Master has opened.
+
+```
+authorize example.com   # open the gate for one place
+authorize *             # open it wide — full power, nothing between you and the world
+```
 
 ### The mind
 
