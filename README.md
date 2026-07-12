@@ -103,8 +103,14 @@ authorize *             # open it to any PUBLIC site
 ```
 
 `authorize *` opens the gate to the public web only — the SSRF rail still refuses the
-host's loopback, LAN, and cloud-metadata addresses even when the gate is wide open.
+host's loopback, LAN, and cloud-metadata addresses even when the gate is wide open,
+and the gate takes **one hop, never a chain**: redirects are not followed (a 3xx comes
+back as a report naming the destination, which needs your leave like anywhere else).
 Everything the Warrior brings back is tainted and flagged for your leave.
+
+One honest limit of the taint rail: the flag guards what the realm *does* next — the
+Warrior has already **read** what came back by the time you're asked. Reading is the
+exposure a fetch inherently is; the rail ensures nothing is *acted on* without you.
 
 ### The mind
 
@@ -127,22 +133,27 @@ on in its own repo), but nothing of Hermes is vendored here; the realm runs on i
 **Running now:**
 - the **Hall** (one shared, plain-English-only transcript, streamed live, kept on
   disk) with the **bounded view** (a long day folds its middle, keeps the recent tail)
-- the wake order, the scheduler, the closed council loop, `light`/`dark`
+- the wake order, the closed council loop, `light`/`dark`
+- the **name-mention scheduler** (the spec's §10.2): no fixed beats — the face a
+  line names speaks next, the Wizard still catches the Master's word first, only
+  the General closes to the Master, and a hard cap of turns makes a wandering
+  council close honestly instead of talking the day away
 - the **engine**: a real think→act loop (a face reasons, calls tools, reads results,
   speaks), with the reflex that pushes it to think when it acts without reasoning
 - the **bodies**: at `light` each face gets a real container on the dome (DNA mounted,
   the Warrior's body alone wired to egress), harvested at `dark`
 - the **gate + taint rail**: the Warrior only crosses to a Master-`authorize`d domain,
-  and anything pulled from outside is flagged for the Master's leave
+  one hop only (redirects refused, reported instead), and anything pulled from
+  outside is flagged for the Master's leave
 - the **Chant**, the **two walls**, and the Wizard's **Theory of the World** (grown
   from real sorties)
 
-**Next** (cut MoR-native from the Hermes reference as they land): **genuine council
-deliberation** — right now a day is a fixed beat sequence, not a council that can
-branch or decline; real turn-taking (the name-mention scheduler) is the honest gap.
-Then the **verify/skeptic** reflex (the General re-running the Wizard's claims, not
-just flagging them), a wider toolbox, and `gpu` polish. And the personas are yours —
-write them into `personas/{wizard,general,warrior}.md`; they're living seeds the walls
-grow from there.
+**Next** (cut MoR-native from the Hermes reference as they land): how *well* the
+council deliberates now rests on the mind you attach — the honest note is that the
+offline stand-in walks one fixed branch of the scheduler, and genuine branching only
+shows with a served model. Then the **verify/skeptic** reflex (the General re-running
+the Wizard's claims, not just flagging them), a wider toolbox, and `gpu` polish. And
+the personas are yours — write them into `personas/{wizard,general,warrior}.md`;
+they're living seeds the walls grow from there.
 
 *Here begins the Realm. It is written down so it will not be lost.*
