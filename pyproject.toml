@@ -13,11 +13,10 @@ requires-python = ">=3.9"
 # stdlib urllib.
 dependencies = []
 
-# The installable command is `mor` — NOT `hermes`. MoR must never clobber the
-# real Hermes harness (and its `gpu serve`), which owns the `hermes` command.
-# For the in-realm "type hermes" feel, use the local ./hermes wrapper instead.
+# The command is `opus` — a *work*, and a wink to whose it is. Deliberately NOT
+# `hermes`, so MoR can never clobber the real Hermes harness (and its `gpu serve`).
 [project.scripts]
-mor = "mor.cli:main"
+opus = "mor.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["mor*"]

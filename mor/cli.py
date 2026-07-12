@@ -1,13 +1,16 @@
-"""`hermes` — the door into the realm.
+"""`opus` — the door into the realm.
 
 Start it with no arguments to open the shell. Inside: `light` (or `1`) breaks a
 new day and beams you in; type anything to speak into the Hall; `dark` (or `0`)
-ends the day. `gpu serve <url>` points the realm at your real model; until then
-it runs on the built-in offline mind so you can watch it move on first clone.
+ends the day. `gpu ssh <ssh… -L port:host:port>` opens the tunnel to your model
+and points the realm at it in one command; until then it runs on the built-in
+offline mind so you can watch it move on first clone.
 """
 
 from __future__ import annotations
 
+import atexit
+import subprocess
 import sys
 
 from mor import ui
@@ -26,44 +29,104 @@ HELP = f"""{ui.bold('Commands')}
   {ui.cyan('dark')} / {ui.cyan('0')}       end the day — walls written, the Chant sung, sleep
   {ui.cyan('<text>')}          (while awake) speak into the Hall — the Wizard catches it
   {ui.cyan('authorize')} <d>   open the gate for a domain (the Master's leave to egress)
-  {ui.cyan('gpu')} ...         serve <url> [model] · attach <host> · status · off
+  {ui.cyan('gpu')} ...         ssh <ssh… -L p:h:p> · model <id> · serve <url> · status · off
   {ui.cyan('space')} ...       (show) · use <name> · new <name> · list
   {ui.cyan('help')} / {ui.cyan('?')}       this
   {ui.cyan('quit')} / {ui.cyan('q')}       leave (ends the day first if one is lit)
 """
 
 
+# A background SSH tunnel, held for the life of the shell.
+_TUNNEL = None
+
+
+def _tunnel_alive() -> bool:
+    return _TUNNEL is not None and _TUNNEL.poll() is None
+
+
+def _kill_tunnel() -> None:
+    global _TUNNEL
+    if _tunnel_alive():
+        try:
+            _TUNNEL.terminate()
+        except Exception:  # noqa: BLE001 — best-effort teardown
+            pass
+    _TUNNEL = None
+
+
+atexit.register(_kill_tunnel)
+
+
+def _local_port(args) -> str:
+    """The local port of a `-L localport:host:remoteport` forward."""
+    for i, a in enumerate(args):
+        if a == "-L" and i + 1 < len(args):
+            return args[i + 1].split(":")[0]
+        if a.startswith("-L") and len(a) > 2:
+            return a[2:].split(":")[0]
+    return ""
+
+
 def _gpu(rest: str) -> None:
+    """One command to reach your model: `gpu ssh <full ssh… with -L forward>`.
+
+    Opens the tunnel in the background and points the realm at localhost:<port>.
+    Everything else (`model`, `serve`, `off`, `status`) is a small helper around it.
+    """
+    global _TUNNEL
     parts = rest.split()
     sub = parts[0].lower() if parts else "status"
     state = load_json(gpu_state_path(), {})
-    if sub == "serve":
+
+    if sub == "ssh":
+        ssh_args = parts[1:]
+        port = _local_port(ssh_args)
+        if not port:
+            print(ui.yellow("usage: gpu ssh <ssh args including -L localport:host:remoteport>"))
+            print(ui.dim("  e.g. gpu ssh -p 11808 root@87.102.11.146 -L 8080:localhost:8080"))
+            return
+        _kill_tunnel()
+        cmd = ["ssh", "-N", "-o", "ServerAliveInterval=30",
+               "-o", "ExitOnForwardFailure=yes"] + ssh_args
+        try:
+            _TUNNEL = subprocess.Popen(cmd)
+        except FileNotFoundError:
+            print(ui.red("  ssh not found on PATH."))
+            return
+        base_url = f"http://localhost:{port}/v1"
+        state.update(base_url=base_url, served=True, ssh=" ".join(ssh_args),
+                     local_port=port, model=state.get("model", "default"))
+        save_json(gpu_state_path(), state)
+        print(ui.green(f"  ⛓  tunnel up (pid {_TUNNEL.pid}) — the oracle is served at {base_url}"))
+        print(ui.dim(f"     model: {state['model']}  ·  set it with `gpu model <id>` if your "
+                     "server needs an exact name.  Takes the throne at next `light`."))
+    elif sub == "model":
+        if len(parts) < 2:
+            print(ui.yellow("usage: gpu model <model-id>"))
+            return
+        state["model"] = parts[1]
+        save_json(gpu_state_path(), state)
+        print(ui.green(f"  model → {parts[1]}"))
+    elif sub == "serve":  # manual: point at an already-reachable url
         if len(parts) < 2:
             print(ui.yellow("usage: gpu serve <base_url> [model]"))
             return
         state.update(base_url=parts[1].rstrip("/"), served=True,
-                     model=parts[2] if len(parts) > 2 else state.get("model", "mor"))
+                     model=parts[2] if len(parts) > 2 else state.get("model", "default"))
         save_json(gpu_state_path(), state)
-        print(ui.green(f"  The oracle is served at {state['base_url']} "
-                       f"(model: {state['model']}). It takes the throne at next `light`."))
-    elif sub == "attach":
-        if len(parts) < 2:
-            print(ui.yellow("usage: gpu attach <host> [user] [port]"))
-            return
-        state.update(host=parts[1], user=parts[2] if len(parts) > 2 else "root",
-                     port=int(parts[3]) if len(parts) > 3 else 22)
-        save_json(gpu_state_path(), state)
-        print(ui.green(f"  GPU box noted: {state.get('user')}@{state['host']}. "
-                       "Serve a model on it and `gpu serve <url>` to use it."))
-    elif sub in ("off", "detach"):
+        print(ui.green(f"  the oracle is served at {state['base_url']}. Throne at next `light`."))
+    elif sub in ("off", "detach", "down"):
+        _kill_tunnel()
         state["served"] = False
         save_json(gpu_state_path(), state)
-        print(ui.dim("  The realm falls back to the offline mind."))
+        print(ui.dim("  tunnel down — the realm falls back to the offline mind."))
     else:  # status
         if state.get("served"):
-            print(ui.dim(f"  served: {state.get('base_url')} (model: {state.get('model')})"))
+            live = "tunnel live" if _tunnel_alive() else "no tunnel process in this shell"
+            print(ui.dim(f"  served: {state.get('base_url')} "
+                         f"(model: {state.get('model')}) — {live}"))
         else:
-            print(ui.dim("  offline mind (no served oracle). `gpu serve <url>` to attach one."))
+            print(ui.dim("  offline mind. `gpu ssh <ssh… -L port:host:port>` to reach your model."))
 
 
 def _space(rest: str) -> None:
@@ -114,6 +177,7 @@ def repl() -> None:
         if cmd in ("quit", "exit", "q"):
             if realm.awake:
                 realm.dark()
+            _kill_tunnel()
             break
         elif cmd in ("light", "1"):
             realm.light()
