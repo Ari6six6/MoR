@@ -50,6 +50,15 @@ GLYPH = {
 }
 
 
+def bar(fraction: float, width: int = 22, label: str = "") -> str:
+    """A dependency-free progress bar: [█████·········]  45%  label."""
+    fraction = max(0.0, min(1.0, fraction))
+    filled = int(round(fraction * width))
+    body = "█" * filled + "·" * (width - filled)
+    tail = f"  {label}" if label else ""
+    return f"[{body}] {int(fraction * 100):3d}%{tail}"
+
+
 def hall_line(speaker: str, addressee: str | None, text: str) -> str:
     paint = VOICE.get(speaker, grey)
     who = GLYPH.get(speaker, speaker)

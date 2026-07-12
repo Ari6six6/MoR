@@ -14,6 +14,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 from mor import ui
@@ -59,6 +60,46 @@ def _kill_tunnel() -> None:
 
 
 atexit.register(_kill_tunnel)
+
+
+def _clear_line() -> None:
+    if sys.stdout.isatty():
+        sys.stdout.write("\r" + " " * 72 + "\r")
+        sys.stdout.flush()
+
+
+def _wait_with_bar(proc, seconds: float = 2.5, label: str = "working") -> bool:
+    """Animate a progress bar for up to `seconds` while `proc` stays alive.
+
+    Returns True if it's still alive at the end (looks good), False if it exited
+    early (report the failure). On a non-tty, just waits quietly.
+    """
+    tty = sys.stdout.isatty()
+    steps = max(1, int(seconds / 0.1))
+    for i in range(steps):
+        if proc.poll() is not None:
+            _clear_line()
+            return False
+        if tty:
+            sys.stdout.write("\r  " + ui.cyan(ui.bar((i + 1) / steps, label=label)))
+            sys.stdout.flush()
+        time.sleep(0.1)
+    _clear_line()
+    return proc.poll() is None
+
+
+def _spinner(stop: "threading.Event", label: str) -> None:
+    if not sys.stdout.isatty():
+        return
+    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    i, t0 = 0, time.time()
+    while not stop.is_set():
+        sys.stdout.write(f"\r  {ui.cyan(frames[i % len(frames)])} {label}… "
+                         f"{time.time() - t0:4.1f}s")
+        sys.stdout.flush()
+        i += 1
+        time.sleep(0.1)
+    _clear_line()
 
 
 def _local_port(args) -> str:
@@ -107,8 +148,8 @@ def _gpu(rest: str) -> None:
         except FileNotFoundError:
             print(ui.red("  ssh not found on PATH."))
             return
-        time.sleep(1.5)  # give it a moment to connect (or fail) before we report
-        if _TUNNEL.poll() is not None:
+        # Watch it come up behind a progress bar (and catch an early failure).
+        if _wait_with_bar(_TUNNEL, seconds=2.5, label="opening tunnel") is False:
             err = ""
             try:
                 err = (_TUNNEL.stderr.read() or b"").decode("utf-8", "replace").strip()
@@ -134,9 +175,16 @@ def _gpu(rest: str) -> None:
             print(ui.yellow("  no served oracle — `gpu ssh <ssh… -L port:host:port>` first."))
             return
         from mor.mind import ServedMind
-        print(ui.dim(f"  knocking on the oracle at {state.get('base_url')} ..."))
-        reply = ServedMind(state).speak("You are a terse test probe.",
-                                        "Reply with exactly one word: pong")
+        stop = threading.Event()
+        th = threading.Thread(target=_spinner, args=(stop, "knocking on the oracle"),
+                              daemon=True)
+        th.start()
+        try:
+            reply = ServedMind(state).speak("You are a terse test probe.",
+                                            "Reply with exactly one word: pong")
+        finally:
+            stop.set()
+            th.join(timeout=1)
         print("  " + ui.green("oracle answered: ") + reply[:400])
     elif sub == "model":
         if len(parts) < 2:
