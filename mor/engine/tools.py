@@ -90,6 +90,12 @@ def _web_fetch(args, ctx):
             body = r.read(4000).decode("utf-8", "replace")
             status = r.status
         ctx.tainted.append(domain)  # taint: it came from outside
+        if ctx.space is not None:  # the Wizard's map grows from real sorties
+            try:
+                from mor import world
+                world.record_sortie(ctx.space, domain, f"GET {status}, {len(body)} bytes")
+            except Exception:  # noqa: BLE001 — never let bookkeeping break a sortie
+                pass
         return f"[{status}] {domain} — {len(body)} bytes (TAINTED):\n{body[:2000]}"
     except Exception as e:  # noqa: BLE001
         return f"ERROR reaching {domain}: {type(e).__name__}"

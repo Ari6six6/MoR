@@ -9,7 +9,6 @@ when each writes its walls, the Wizard sings the day's Chant, and the loop close
 
 from __future__ import annotations
 
-from mor import agents, world
 from mor.agents import ROLES, line
 from mor.hall import Hall
 from mor.engine import Dome, make_backend, hall_view
@@ -22,6 +21,7 @@ class Realm:
         self.echo = echo
         self.backend, self.mode = make_backend()
         self.dome = None
+        self._tainted = []
         self.day = None
         self.hall = None
         self.awake = False
@@ -39,6 +39,7 @@ class Realm:
         self.backend, self.mode = make_backend()
         self.day = self.space.next_day_number()
         self.hall = Hall(self.space, self.day, echo=self.echo)
+        self._tainted = []  # domains the Warrior pulls from outside this day
         print(ui.bold(ui.green(
             f"\n  ☀  Day {self.day} breaks over the realm  ")) + ui.dim(
             f"(mind: {self.mode})") + "\n")
@@ -95,23 +96,24 @@ class Realm:
                      hall_tail=self._view())
         h.post("general", "warrior", order)
 
-        sortie = agents.warrior_sortie(self.space, order)
-        h.post("warrior", "general",
-               line(self.backend, self.space, "warrior", "warrior_reports", heard=text,
-                    hall_tail=self._view()))
-        h.post("warrior", "general", sortie["report"])
+        # The Warrior carries it out for real — in his egress body, with web_fetch.
+        # Whatever he pulls from outside lands in the day's taint list.
+        before = len(self._tainted)
+        report = line(self.backend, self.space, "warrior", "warrior_reports", heard=order,
+                      hall_tail=self._view(), taint_sink=self._tainted)
+        h.post("warrior", "general", report)
+        touched = self._tainted[before:]
 
-        if sortie["escalate"]:
-            # Chain of command: the General escalates to the Master for the gate.
-            h.post("general", "master",
-                   f"We must reach {sortie['escalate']}, but the gate is shut for it. "
-                   f"Say `authorize {sortie['escalate']}` to open it, and I send him again.")
-            return
-
-        # The General brings the settled council back to the Master.
-        h.post("general", "master",
-               line(self.backend, self.space, "general", "general_to_master", heard=text,
-                    hall_tail=self._view()))
+        # The General brings the settled council back to the Master — and if the
+        # Warrior brought anything from outside, it is flagged (the Eighth Evangelism:
+        # act on tainted input only with the Master's leave).
+        verdict = line(self.backend, self.space, "general", "general_to_master",
+                       heard=text, hall_tail=self._view())
+        if touched:
+            verdict = (f"⚠ this rests on data the Warrior pulled from outside the dome "
+                       f"({', '.join(sorted(set(touched)))}) — tainted; your leave before "
+                       f"we act on it. " + verdict)
+        h.post("general", "master", verdict)
 
     def authorize(self, domain: str) -> None:
         self.space.authorize(domain)

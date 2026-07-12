@@ -13,9 +13,6 @@ keeps the realm runnable. The walls then evolve who each one is, night by night.
 
 from __future__ import annotations
 
-import json
-import re
-
 from mor import world
 from mor.engine import ToolContext, default_tools, think_and_act
 
@@ -111,8 +108,11 @@ _USER_TASK = {
                      "agree that it is fine and hand the turn on.",
     "order_warrior": "You have agreed a plan. In one line, order the Warrior on a "
                      "specific sortie about: \"{heard}\". Strict and clean.",
-    "warrior_reports": "You have returned from your sortie about: \"{heard}\". In one "
-                       "line to the General, report that it is done and a report follows.",
+    "warrior_reports": "The General ordered a sortie: \"{heard}\". You alone can leave "
+                       "the dome — if it needs the outside, use web_fetch (the General "
+                       "must have opened the gate; if it is shut, say so and ask for the "
+                       "Master's leave). Then report to the General in plain English what "
+                       "you did and everything you touched.",
     "general_to_master": "The council is settled and the ground is checked. In one "
                          "line, bring where you stand to the Master and ask his word.",
     "chant": "It is dusk. Write the day's Chant: under 200 words, a short chant or "
@@ -125,66 +125,25 @@ _USER_TASK = {
 
 
 def line(backend, space, role: str, kind: str, heard: str = "", hall_tail: str = "",
-         log=lambda *_: None) -> str:
+         taint_sink=None, log=lambda *_: None) -> str:
     """Ask one face to speak once for a given beat of the day — through the engine.
 
     The face gets its voice (persona + roster + walls + world + Hall tail) and its
     hands (workspace tools; the Warrior alone gets egress), and thinks→acts until
     it says its line. The offline mind short-circuits to one in-character line.
+
+    `taint_sink`, when given, is the list the tools record outside-touched domains
+    into (the Eighth Evangelism): a caller passes the day's taint list so it can see
+    whether this turn pulled anything from beyond the dome.
     """
     system = _build_system(space, role, hall_tail)
     user = _USER_TASK.get(kind, "Speak one plain-English line in the Hall.").format(
         heard=short(heard, 200))
     ctx = ToolContext(workspace=space.root / "population" / role / "workspace",
                       space=space, can_egress=(role == "warrior"),
+                      tainted=taint_sink if taint_sink is not None else [],
                       dome=getattr(space, "dome", None), role=role)
     spoken, _tainted = think_and_act(
         backend, role=role, kind=kind, heard=heard, system=system, user=user,
         tools=default_tools(ctx), ctx=ctx, log=log)
     return spoken
-
-
-# --------------------------------------------------------------------------
-# The Warrior's sortie — the only egress, through the General's gate
-# --------------------------------------------------------------------------
-_URLISH = re.compile(r"\b((?:https?://)?[a-z0-9.-]+\.[a-z]{2,}(?:/[^\s\"']*)?)", re.I)
-
-
-def find_target(order_text: str) -> str:
-    m = _URLISH.search(order_text or "")
-    return m.group(1) if m else ""
-
-
-def warrior_sortie(space, order_text: str) -> dict:
-    """Go out (only if the gate is open for the target), come back, report.
-
-    Returns {"report": str, "escalate": domain|None}. A real GET happens only
-    when the target's domain is on the Master-authorised allowlist; otherwise
-    the Warrior asks (through the chain of command) for the gate to be opened.
-    """
-    target = find_target(order_text)
-    if not target:
-        return {"report": "No outside target in the order — I stayed in and scouted "
-                          "what we already hold. Nothing left the dome.", "escalate": None}
-    domain = world._domain_of(target)
-    if not space.egress_allowed(domain):
-        return {"report": f"The order points outside, to {domain}, but the gate is not "
-                          f"open for it. I need the Master's leave before I cross.",
-                "escalate": domain}
-    # Gate is open — a real, minimal, capped fetch.
-    url = target if "://" in target else "https://" + target
-    try:
-        import urllib.request
-        req = urllib.request.Request(url, headers={"User-Agent": "MoR-Warrior/0.1"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            status = resp.status
-            body = resp.read(2048).decode("utf-8", "replace")
-        note = f"GET {url} -> {status}, {len(body)} bytes read"
-        world.record_sortie(space, domain, note)
-        return {"report": f"Crossed to {domain} and came back clean. {note}. "
-                          f"Everything I touched is logged.", "escalate": None}
-    except Exception as e:  # noqa: BLE001 — any failure is just a field report
-        world.record_sortie(space, domain, f"attempt failed: {type(e).__name__}")
-        return {"report": f"Reached for {domain} but it turned me back "
-                          f"({type(e).__name__}). Nothing came in. Logged the attempt.",
-                "escalate": None}
