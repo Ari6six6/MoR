@@ -33,7 +33,7 @@ HELP = f"""{ui.bold('Commands')}
   {ui.cyan('dark')} / {ui.cyan('0')}       end the day — walls written, the Chant sung, sleep
   {ui.cyan('<text>')}          (while awake) speak into the Hall — the Wizard catches it
   {ui.cyan('authorize')} <d>   open the gate for a domain (the Master's leave to egress)
-  {ui.cyan('gpu')} ...         ssh <ssh… -L p:h:p> · test · model <id> · serve <url> · status · off
+  {ui.cyan('gpu')} ...         ssh <ssh…> (detect+serve+tunnel) · model [key] · test · status · down
   {ui.cyan('persona')} <role>  write who a face is — wizard · general · warrior (seed → yours)
   {ui.cyan('space')} ...       (show) · use <name> · new <name> · list
   {ui.cyan('help')} / {ui.cyan('?')}       this
@@ -124,17 +124,42 @@ def _gpu(rest: str) -> None:
     state = load_json(gpu_state_path(), {})
 
     if sub == "ssh":
+        from mor import gpu as gpumod
+        from mor.models import get_spec
         ssh_args = parts[1:]
-        port = _local_port(ssh_args)
-        if not port:
+        fwd = gpumod.parse_forward(ssh_args)
+        if not fwd:
             print(ui.yellow("usage: gpu ssh <ssh args including -L localport:host:remoteport>"))
             print(ui.dim("  e.g. gpu ssh -p 11808 root@87.102.11.146 -L 8080:localhost:8080"))
             return
+        local_port, _rhost, rport = fwd
+        cargs = gpumod.conn_args(ssh_args)
+        spec = get_spec(state.get("model_id"))
+
+        # 1. reach the box
+        print(ui.dim("  reaching the box…"))
+        ok, why = gpumod.check_connection(cargs)
+        if not ok:
+            print(ui.red("  can't reach the box: ") + ui.dim(why))
+            return
+        # 2. detect GPUs + plan the tier (fails clearly if the box is too small)
+        try:
+            gpus = gpumod.detect_gpus(cargs)
+            tp, max_len, util, total_gb = gpumod.plan(gpus, spec)
+        except gpumod.ProvisionError as e:
+            print(ui.red("  " + str(e)))
+            return
+        print(ui.green(f"  {len(gpus)}× GPU · {total_gb}GB VRAM") + ui.dim(
+            f"  ({', '.join(n for n, _ in gpus)})"))
+        print(ui.dim(f"  serving {spec.label}") + ui.dim(f" · context {max_len} · port {rport}"))
+        # 3. install the runtime + launch the server on the box
+        try:
+            gpumod.launch(cargs, spec, tp, max_len, util, rport, print)
+        except gpumod.ProvisionError as e:
+            print(ui.red("  " + str(e)))
+            return
+        # 4. open the tunnel (headless: no stdin fight, no host-key prompt)
         _kill_tunnel()
-        # The tunnel runs headless: it must never read this terminal's stdin (or it
-        # fights the REPL for the keyboard) and never stop for a host-key prompt.
-        # accept-new adds an unknown key but still refuses a *changed* one; BatchMode
-        # means no password/passphrase prompt — key auth must work on its own.
         cmd = ["ssh", "-N",
                "-o", "StrictHostKeyChecking=accept-new",
                "-o", "BatchMode=yes",
@@ -143,12 +168,10 @@ def _gpu(rest: str) -> None:
                "-o", "ConnectTimeout=15"] + ssh_args
         try:
             _TUNNEL = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                                       stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.PIPE)
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except FileNotFoundError:
             print(ui.red("  ssh not found on PATH."))
             return
-        # Watch it come up behind a progress bar (and catch an early failure).
         if _wait_with_bar(_TUNNEL, seconds=2.5, label="opening tunnel") is False:
             err = ""
             try:
@@ -159,17 +182,20 @@ def _gpu(rest: str) -> None:
             print(ui.red("  ⛓  tunnel failed to come up."))
             if err:
                 print(ui.dim("     " + err.splitlines()[-1][:200]))
-            print(ui.dim("     key auth must work on its own (BatchMode is on, so no "
-                         "password prompt). Add your key to the box or ssh-agent, or test "
-                         "the exact ssh command in a normal shell first."))
             return
-        base_url = f"http://localhost:{port}/v1"
-        state.update(base_url=base_url, served=True, ssh=" ".join(ssh_args),
-                     local_port=port, model=state.get("model", "default"))
+        # 5. wait for weights to load and the endpoint to answer
+        ready = gpumod.wait_ready(cargs, local_port, spec, print)
+        base_url = f"http://localhost:{local_port}/v1"
+        state.update(base_url=base_url, served=True, model=spec.served_name,
+                     model_id=spec.key, ssh_conn=cargs, local_port=local_port)
         save_json(gpu_state_path(), state)
-        print(ui.green(f"  ⛓  tunnel up (pid {_TUNNEL.pid}) — the oracle is served at {base_url}"))
-        print(ui.dim(f"     model: {state['model']}  ·  set it with `gpu model <id>` if your "
-                     "server needs an exact name.  Takes the throne at next `light`."))
+        if ready:
+            print(ui.green(f"  ⛓  the oracle is awake at {base_url}") + ui.dim(
+                f"  (model: {spec.served_name}) — takes the throne at next `light`."))
+        else:
+            print(ui.yellow("  tunnel up and the server is launching, but it didn't answer "
+                            "in time — weights may still be loading."))
+            print(ui.dim("     check with `gpu test` or `gpu status` in a few minutes."))
     elif sub in ("test", "ping"):
         if not state.get("served"):
             print(ui.yellow("  no served oracle — `gpu ssh <ssh… -L port:host:port>` first."))
@@ -186,13 +212,24 @@ def _gpu(rest: str) -> None:
             stop.set()
             th.join(timeout=1)
         print("  " + ui.green("oracle answered: ") + reply[:400])
-    elif sub == "model":
+    elif sub in ("model", "models"):
+        from mor.models import CATALOG, get_spec
         if len(parts) < 2:
-            print(ui.yellow("usage: gpu model <model-id>"))
+            cur = state.get("model_id", "glm")
+            for k, s in CATALOG.items():
+                mark = ui.green("→") if k == cur else " "
+                print(f"  {mark} {ui.cyan(k):22} {ui.dim(s.label)}")
+            print(ui.dim("  pick:  gpu model <key>  (served on the next `gpu ssh …`)"))
             return
-        state["model"] = parts[1]
+        key = parts[1]
+        if key not in CATALOG:
+            print(ui.yellow(f"unknown model '{key}' — one of: {', '.join(CATALOG)}"))
+            return
+        spec = get_spec(key)
+        state.update(model_id=key, model=spec.served_name)
         save_json(gpu_state_path(), state)
-        print(ui.green(f"  model → {parts[1]}"))
+        print(ui.green(f"  model → {spec.label}"))
+        print(ui.dim(f"  needs ~{spec.min_total_gb}GB VRAM · {spec.weights_note}"))
     elif sub == "serve":  # manual: point at an already-reachable url
         if len(parts) < 2:
             print(ui.yellow("usage: gpu serve <base_url> [model]"))
@@ -201,18 +238,28 @@ def _gpu(rest: str) -> None:
                      model=parts[2] if len(parts) > 2 else state.get("model", "default"))
         save_json(gpu_state_path(), state)
         print(ui.green(f"  the oracle is served at {state['base_url']}. Throne at next `light`."))
-    elif sub in ("off", "detach", "down"):
+    elif sub == "down":  # stop the server on the box AND drop the tunnel
+        cargs = state.get("ssh_conn")
+        if cargs:
+            from mor import gpu as gpumod
+            print(ui.dim("  stopping the model server on the box…"))
+            gpumod.stop(cargs)
         _kill_tunnel()
         state["served"] = False
         save_json(gpu_state_path(), state)
-        print(ui.dim("  tunnel down — the realm falls back to the offline mind."))
+        print(ui.dim("  server stopped, tunnel down — the realm falls back to the offline mind."))
+    elif sub in ("off", "detach"):  # just drop the tunnel; leave the server running
+        _kill_tunnel()
+        state["served"] = False
+        save_json(gpu_state_path(), state)
+        print(ui.dim("  tunnel down — offline mind. (server left running; `gpu down` stops it.)"))
     else:  # status
         if state.get("served"):
             live = "tunnel live" if _tunnel_alive() else "no tunnel process in this shell"
             print(ui.dim(f"  served: {state.get('base_url')} "
                          f"(model: {state.get('model')}) — {live}"))
         else:
-            print(ui.dim("  offline mind. `gpu ssh <ssh… -L port:host:port>` to reach your model."))
+            print(ui.dim("  offline mind. `gpu ssh <ssh… -L port:host:port>` to serve your model."))
 
 
 def _space(rest: str) -> None:
