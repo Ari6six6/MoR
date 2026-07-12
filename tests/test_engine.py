@@ -117,25 +117,28 @@ def test_bad_scheme_refused(space):
     assert _web_fetch({"url": "file:///etc/passwd"}, ctx).startswith("DENIED")
 
 
-def test_public_fetch_taints_and_maps(space, monkeypatch):
+class FakeResp:
+    status = 200
+
+    def read(self, n=None):
+        return b"<html>outside</html>"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _resolve_public(monkeypatch):
     import socket
-    import urllib.request
     monkeypatch.setattr(socket, "getaddrinfo",
                         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))])
 
-    class FakeResp:
-        status = 200
 
-        def read(self, n=None):
-            return b"<html>outside</html>"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: FakeResp())
+def test_public_fetch_taints_and_maps(space, monkeypatch):
+    _resolve_public(monkeypatch)
+    monkeypatch.setattr("mor.engine.tools._open_one_hop", lambda *a, **k: FakeResp())
     ctx = _ctx(space)
     space.authorize("example.com")
     out = _web_fetch({"url": "http://example.com/"}, ctx)
@@ -143,6 +146,51 @@ def test_public_fetch_taints_and_maps(space, monkeypatch):
     assert ctx.tainted == ["example.com"]
     from mor import world
     assert "example.com" in world.load(space).get("places", {})
+
+
+# --- the gate takes one hop (finding #6) ------------------------------------
+def _http_error(url, code, msg, location=None, body=b""):
+    import email.message
+    import io
+    import urllib.error
+    headers = email.message.Message()
+    if location:
+        headers["Location"] = location
+    return urllib.error.HTTPError(url, code, msg, headers, io.BytesIO(body))
+
+
+def test_redirect_is_refused_not_followed(space, monkeypatch):
+    """An authorized site 302-ing to the metadata endpoint (or anywhere) is the
+    classic pivot past both rails — the gate must refuse the hop, not take it."""
+    _resolve_public(monkeypatch)
+    evil = "http://169.254.169.254/latest/meta-data/"
+
+    def bounce(req, timeout):
+        raise _http_error(req.full_url, 302, "Found", location=evil)
+
+    monkeypatch.setattr("mor.engine.tools._open_one_hop", bounce)
+    ctx = _ctx(space)
+    space.authorize("example.com")
+    out = _web_fetch({"url": "http://example.com/"}, ctx)
+    assert out.startswith("DENIED")
+    assert evil in out              # the destination is reported, not visited
+    assert ctx.tainted == []        # nothing crossed, nothing to taint
+
+
+def test_http_error_body_is_still_tainted_outside_data(space, monkeypatch):
+    """A 404 page is still an answer from outside — deliver it under the taint
+    flag instead of swallowing it as an opaque ERROR."""
+    _resolve_public(monkeypatch)
+
+    def not_found(req, timeout):
+        raise _http_error(req.full_url, 404, "Not Found", body=b"no such page")
+
+    monkeypatch.setattr("mor.engine.tools._open_one_hop", not_found)
+    ctx = _ctx(space)
+    space.authorize("example.com")
+    out = _web_fetch({"url": "http://example.com/gone"}, ctx)
+    assert out.startswith("[404]") and "TAINTED" in out and "no such page" in out
+    assert ctx.tainted == ["example.com"]
 
 
 # --- path safety -----------------------------------------------------------

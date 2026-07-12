@@ -82,7 +82,14 @@ def _blocked_ip(host: str) -> str:
     """'' if every address `host` resolves to is a public unicast address; a reason
     string if any is private/loopback/link-local/reserved/multicast (the SSRF rail:
     the gate opens onto the public web, never the host's own network or its cloud
-    metadata endpoint at 169.254.169.254)."""
+    metadata endpoint at 169.254.169.254).
+
+    Known limit, accepted deliberately: this is check-then-connect — the fetch
+    resolves the name a second time, so a DNS server that rebinds between the two
+    lookups can slip an address past the rail. Pinning the resolved address is
+    ugly in pure stdlib (connect by IP, hand-set SNI and Host); until that's worth
+    its weight, the rail stops honest infrastructure and mistakes, not a hostile
+    resolver."""
     import ipaddress
     import socket
     try:
@@ -99,6 +106,35 @@ def _blocked_ip(host: str) -> str:
                 or ip.is_multicast or ip.is_unspecified):
             return f"{host} resolves to a non-public address ({addr})"
     return ""
+
+
+def _open_one_hop(req, timeout: float):
+    """Open a request WITHOUT following redirects — the gate takes one hop, never
+    a chain. A redirect target is a *different* place: a domain the Master never
+    authorized, or (the classic SSRF pivot) the host's own metadata endpoint — and
+    both rails only ran against the URL the Warrior asked for. A 3xx surfaces as
+    an HTTPError and comes back as an observation instead: the Warrior reports the
+    destination, and crossing to it takes the Master's leave like anywhere else."""
+    import urllib.request
+
+    class RefuseRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None  # refuse to follow: the 3xx surfaces as an HTTPError
+
+    return urllib.request.build_opener(RefuseRedirect).open(req, timeout=timeout)
+
+
+def _deliver(status: int, domain: str, raw: bytes, ctx) -> str:
+    """Hand a response body to the face: tainted, and folded into the world map."""
+    body = raw.decode("utf-8", "replace")
+    ctx.tainted.append(domain)  # taint: it came from outside
+    if ctx.space is not None:  # the Wizard's map grows from real sorties
+        try:
+            from mor import world
+            world.record_sortie(ctx.space, domain, f"GET {status}, {len(body)} bytes")
+        except Exception:  # noqa: BLE001 — never let bookkeeping break a sortie
+            pass
+    return f"[{status}] {domain} — {len(body)} bytes (TAINTED):\n{body[:2000]}"
 
 
 def _web_fetch(args, ctx):
@@ -122,20 +158,24 @@ def _web_fetch(args, ctx):
     blocked = _blocked_ip(domain)
     if blocked:
         return f"DENIED: {blocked} — the gate does not open onto private networks."
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "MoR-Warrior/0.1"})
     try:
-        import urllib.request
-        req = urllib.request.Request(url, headers={"User-Agent": "MoR-Warrior/0.1"})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            body = r.read(4000).decode("utf-8", "replace")
-            status = r.status
-        ctx.tainted.append(domain)  # taint: it came from outside
-        if ctx.space is not None:  # the Wizard's map grows from real sorties
-            try:
-                from mor import world
-                world.record_sortie(ctx.space, domain, f"GET {status}, {len(body)} bytes")
-            except Exception:  # noqa: BLE001 — never let bookkeeping break a sortie
-                pass
-        return f"[{status}] {domain} — {len(body)} bytes (TAINTED):\n{body[:2000]}"
+        with _open_one_hop(req, timeout=15) as r:
+            return _deliver(r.status, domain, r.read(4000), ctx)
+    except urllib.error.HTTPError as e:
+        if 300 <= e.code < 400:
+            where = e.headers.get("Location", "(no Location given)")
+            return (f"DENIED: {domain} answered {e.code} redirecting to {where} — "
+                    "the gate does not follow redirects. If the sortie needs that "
+                    "destination, report it: its domain needs the Master's leave too.")
+        # An HTTP error is still an answer from outside — deliver it, tainted.
+        try:
+            raw = e.read(4000)
+        except Exception:  # noqa: BLE001
+            raw = b""
+        return _deliver(e.code, domain, raw, ctx)
     except Exception as e:  # noqa: BLE001
         return f"ERROR reaching {domain}: {type(e).__name__}"
 
