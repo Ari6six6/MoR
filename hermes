@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# The door into the realm without installing anything: ./hermes
-# (or `pip install -e .` once, then just `hermes`)
+# The door into the realm without installing anything:  ./hermes
+# NOTE the leading ./ — a different `hermes` (the old harness) may be on your PATH.
+# (or once, to get a bare `hermes`:  pip install -e .  — but that replaces any
+#  existing global `hermes` command, since they share the name.)
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec python3 -m mor "$@"
+exec env PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" python3 -m mor "$@"

@@ -53,8 +53,14 @@ The realm runs on the Python standard library — **no pip installs required.**
 ```sh
 git clone https://github.com/Ari6six6/MoR.git
 cd MoR
-./hermes            # or: pip install -e .  &&  hermes
+./hermes            # ← note the ./  — run the LOCAL one, not a global `hermes`
 ```
+
+> **Mind the `./`.** If you already have the old Hermes harness installed, a bare
+> `hermes` will run *that* (its banner says "sit down: debate · send it off: go"),
+> not MoR. Always start MoR with `./hermes` (or `python3 -m mor`). To claim a bare
+> `hermes` for MoR, `pip install -e .` — but that replaces the old global command,
+> since they share the name.
 
 Then, inside the shell:
 
