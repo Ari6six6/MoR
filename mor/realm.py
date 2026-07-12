@@ -86,12 +86,20 @@ class Realm:
             h.post(role, addr, out)
             return out
 
+        # NOTE: this is a FIXED beat sequence, not yet real deliberation. The faces
+        # always speak in this order; the "assent" beat always assents; the Warrior
+        # beat always runs (though whether he actually egresses is the model's call).
+        # Genuine branching — a council that can decline, and dynamic turn-taking via
+        # the name-mention scheduler the spec describes — is the next cut. Until then,
+        # read these beats as choreography that gives real turns their stage.
+
         # Rule 2: the Wizard always catches the Master's word first.
         w = say("wizard", "wizard_takes", text)
-        # Council: General tests it, Wizard agrees — mutual consent closes it.
+        # The General presses on it; the Wizard assents (a scripted close, for now).
         g = say("general", "general_debates", w)
         say("wizard", "wizard_agrees", g)
-        # The General opens the gate: a sortie for the Warrior.
+        # The General hands the Warrior a sortie (he decides in his turn if it needs
+        # the outside; if not, he stays in and says so).
         order = line(self.backend, self.space, "general", "order_warrior", heard=text,
                      hall_tail=self._view())
         h.post("general", "warrior", order)

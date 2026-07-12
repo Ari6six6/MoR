@@ -119,10 +119,20 @@ class ScriptBackend(Backend):
 
 # --------------------------------------------------------------------------
 class MockBackend(Backend):
-    """The offline mind. It never runs the tool loop — `think_and_act` short-
-    circuits it to one in-character line so the realm moves with no GPU."""
+    """The offline mind. It runs the *same* loop the served mind does, but its reply
+    is a seeded in-character line (no tool calls) — so the realm moves with no GPU
+    while the loop machinery still executes and stays honest."""
+
+    def __init__(self):
+        self._pending = None
+
+    def seed(self, text: str) -> None:
+        self._pending = text
 
     def chat(self, messages: list, tools: list | None = None) -> ChatResult:
+        if self._pending is not None:
+            text, self._pending = self._pending, None
+            return ChatResult(content=text)
         tail = messages[-1]["content"] if messages else ""
         return ChatResult(content=f"(offline mind heard: {str(tail)[-160:]})")
 

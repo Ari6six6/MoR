@@ -81,23 +81,36 @@ tunnel and fall back to the offline mind; `gpu status` to check.
 
 Want to watch a whole day move without typing? `./opus --demo`.
 
-### Full power by default
+### What you get on first clone (the honest version)
 
-The realm ships at **full power** — every faculty is on the moment you enter;
-there are no opt-in flags to raise. The one rail that stays lit (by design — it's
-your General's whole job, and the taint boundary of the Eighth Evangelism) is the
-egress gate: the Warrior crosses only to a domain the Master has opened.
+There are no opt-in flags to raise — but a first run with **no model attached** is a
+*deterministic stand-in*, not the full engine. The offline mind seeds each face's
+line so the realm visibly moves and the loop runs, but it never calls a tool: the
+real thinking, the Warrior's sorties, the taint rail, and the container bodies only
+come alive once you attach a served model and (for bodies) Docker. `./opus --demo`
+shows the stand-in moving; the engine itself is exercised by the test suite
+(`pytest -q`) and by a served run.
+
+### The gate
+
+The realm's one egress is the Warrior's `web_fetch`, and it stays shut until you open
+it. `run_shell` runs inside a container on the **internal** dome, so no shell can
+reach the internet at all — `web_fetch` is the single, guarded way out.
 
 ```
-authorize example.com   # open the gate for one place
-authorize *             # open it wide — full power, nothing between you and the world
+authorize example.com   # open the gate for one domain
+authorize *             # open it to any PUBLIC site
 ```
+
+`authorize *` opens the gate to the public web only — the SSRF rail still refuses the
+host's loopback, LAN, and cloud-metadata addresses even when the gate is wide open.
+Everything the Warrior brings back is tainted and flagged for your leave.
 
 ### The mind
 
-Out of the box the realm runs on a **built-in offline mind** — a deterministic,
-in-character stand-in so you can *see* it breathe on first clone. Reach your real
-model (vLLM / llama.cpp, OpenAI-compatible) with the one command above:
+Out of the box the realm runs on a **built-in offline stand-in** — deterministic and
+in-character so you can *see* it breathe on first clone (see the honest note above).
+Reach your real model (vLLM / llama.cpp, OpenAI-compatible) with the one command:
 
 ```
 gpu ssh -p <port> root@<host> -L 8080:localhost:8080   # tunnel + serve, one command
@@ -124,9 +137,12 @@ on in its own repo), but nothing of Hermes is vendored here; the realm runs on i
 - the **Chant**, the **two walls**, and the Wizard's **Theory of the World** (grown
   from real sorties)
 
-**Next** (cut MoR-native from the Hermes reference as they land): the verify/skeptic
-reflex (the General re-running the Wizard's claims, not just flagging them), a wider
-toolbox, and `gpu` polish. And the personas are yours — write them into
-`personas/{wizard,general,warrior}.md`; they're living seeds the walls grow from there.
+**Next** (cut MoR-native from the Hermes reference as they land): **genuine council
+deliberation** — right now a day is a fixed beat sequence, not a council that can
+branch or decline; real turn-taking (the name-mention scheduler) is the honest gap.
+Then the **verify/skeptic** reflex (the General re-running the Wizard's claims, not
+just flagging them), a wider toolbox, and `gpu` polish. And the personas are yours —
+write them into `personas/{wizard,general,warrior}.md`; they're living seeds the walls
+grow from there.
 
 *Here begins the Realm. It is written down so it will not be lost.*

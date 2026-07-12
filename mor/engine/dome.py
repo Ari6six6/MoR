@@ -111,10 +111,11 @@ class Dome:
             if rc != 0:
                 self.log(f"  body for {role} failed to rise: {err.strip()[-120:]}")
                 continue
-            # Only the Warrior's body gets a route out — wire it to the default
-            # bridge for egress; the others stay air-gapped on the internal dome.
-            if role == "warrior":
-                _sh(f"{rt} network connect bridge {shlex.quote(name)} 2>/dev/null || true")
+            # EVERY body stays on the internal dome — no container gets a route out,
+            # so `run_shell` in any body (the Warrior's included) is kernel-air-gapped
+            # and cannot reach the internet. The realm's ONLY egress is the web_fetch
+            # tool (Warrior only, gated per-domain, SSRF-guarded, tainted). One gate,
+            # one chokepoint — the run_shell back door is closed by construction.
             self.log(f"  {role}'s body rose on the dome as {name}")
         self.embodied = bool(self.bodies)
         return self.embodied

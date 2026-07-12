@@ -29,9 +29,14 @@ _REFLECT_NUDGE = (
 def think_and_act(backend, *, role: str, kind: str, heard: str, system: str,
                   user: str, tools: list, ctx, log=lambda *_: None,
                   max_steps: int = _MAX_STEPS):
-    """Return (spoken_line, tainted). The offline mind short-circuits to one line."""
+    """Run one face's turn and return (spoken_line, tainted).
+
+    The offline mind doesn't bypass the loop — it seeds an in-character line and
+    then runs the *same* loop the served mind does (it just doesn't call tools), so
+    the machinery is live and validated even with no GPU attached.
+    """
     if isinstance(backend, MockBackend):
-        return flavored_line(role, kind, heard), False
+        backend.seed(flavored_line(role, kind, heard))
 
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": user}]

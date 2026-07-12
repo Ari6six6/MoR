@@ -3,6 +3,11 @@
 One row per model: its weights, runtime (vLLM FP8 or llama.cpp GGUF), VRAM floor,
 and how context scales with VRAM. `gpu model <key>` picks a row; `gpu ssh …` serves
 whatever is selected. GLM is the default — the operator's daily driver.
+
+NOTE: these rows are ASPIRATIONAL — the `repo`/`served_name` values are the intended
+Hugging Face repos and served names, and a serve will fail at launch if a given repo
+or exact name doesn't resolve on the box. Treat the catalog as a starting set to
+confirm against real repos, not a guarantee that every row serves as-is today.
 """
 
 from __future__ import annotations

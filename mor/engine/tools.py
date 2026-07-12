@@ -1,12 +1,21 @@
 """The hands — what a face can actually do, beyond speaking.
 
 A small, real toolset a face acts through inside the loop. Each tool returns a
-plain observation string the face reads on its next turn. The realm's two laws
-are enforced here, not asked for:
-  - the gate: only the Warrior's egress is allowed, and only to a domain the
-    Master has opened (`web_fetch` refuses otherwise);
-  - taint: anything pulled from outside marks the turn tainted (the Eighth
-    Evangelism, cut from Hermes) so the realm can require the Master's leave.
+plain observation string the face reads on its next turn.
+
+Egress is a single chokepoint, and the two rails are enforced here, not asked for:
+  - `run_shell` runs inside a face's container body, which sits on the INTERNAL
+    dome (no route out) — so a shell, the Warrior's included, is kernel-air-gapped
+    and cannot reach the internet at all.
+  - `web_fetch` is therefore the realm's ONLY way out. It is Warrior-only, gated
+    per-domain (the Master must `authorize` the domain), SSRF-guarded (it opens
+    onto the public web, never the host's loopback/LAN or cloud metadata), and it
+    taints the turn (the Eighth Evangelism) so the realm can require the Master's
+    leave before acting on what came back.
+
+web_fetch runs in the opus process (the host), not in a body — which is exactly
+why the SSRF guard matters: without it, an open gate would reach the host's own
+network. With it, an open gate reaches only the public internet.
 """
 
 from __future__ import annotations
@@ -69,20 +78,50 @@ def _list_dir(args, ctx):
     return "\n".join(sorted(x.name + ("/" if x.is_dir() else "") for x in p.iterdir())) or "(empty)"
 
 
+def _blocked_ip(host: str) -> str:
+    """'' if every address `host` resolves to is a public unicast address; a reason
+    string if any is private/loopback/link-local/reserved/multicast (the SSRF rail:
+    the gate opens onto the public web, never the host's own network or its cloud
+    metadata endpoint at 169.254.169.254)."""
+    import ipaddress
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as e:
+        return f"could not resolve {host} ({type(e).__name__})"
+    for info in infos:
+        addr = info[4][0].split("%")[0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            return f"{host} resolves to a non-public address ({addr})"
+    return ""
+
+
 def _web_fetch(args, ctx):
     url = (args.get("url") or "").strip()
     if not url:
         return "ERROR: no url"
     if "://" not in url:
         url = "https://" + url
-    domain = (urlparse(url).hostname or "").lower()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"DENIED: only http(s) may cross the gate, not {parsed.scheme!r}."
+    domain = (parsed.hostname or "").lower()
     if not ctx.can_egress:
         return ("DENIED: only the Warrior may leave the dome. Ask the General to "
                 "send a sortie.")
-    allowed = ctx.space is not None and ctx.space.egress_allowed(domain)
-    if not allowed:
+    if ctx.space is None or not ctx.space.egress_allowed(domain):
         return (f"DENIED: the gate is shut for {domain}. The General must get the "
                 f"Master's leave first (`authorize {domain}`).")
+    # The SSRF rail: even with the gate open, the outside is the *public* web —
+    # never the host's loopback, LAN, or cloud metadata. Checked before we connect.
+    blocked = _blocked_ip(domain)
+    if blocked:
+        return f"DENIED: {blocked} — the gate does not open onto private networks."
     try:
         import urllib.request
         req = urllib.request.Request(url, headers={"User-Agent": "MoR-Warrior/0.1"})
