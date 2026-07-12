@@ -12,7 +12,7 @@ from __future__ import annotations
 from mor import agents, world
 from mor.agents import ROLES, line
 from mor.hall import Hall
-from mor.engine import Dome, make_backend
+from mor.engine import Dome, make_backend, hall_view
 from mor import ui
 
 
@@ -25,6 +25,10 @@ class Realm:
         self.day = None
         self.hall = None
         self.awake = False
+
+    def _view(self) -> str:
+        """The bounded Hall a face carries into its turn (folds a long day)."""
+        return hall_view(self.hall, self.backend)
 
     # -- dawn ------------------------------------------------------------
     def light(self) -> None:
@@ -51,17 +55,17 @@ class Realm:
             self.hall.post("chant", None, prev.read_text().strip())
 
         # Wake in order — Wizard, General, Warrior — each queues at the one mind.
-        tail = self.hall.tail_text()
+        tail = self._view()
         for role in ROLES:
             addressee = None
             self.hall.post(role, addressee, line(self.backend, self.space, role, "wake",
                                                  hall_tail=tail))
-            tail = self.hall.tail_text()
+            tail = self._view()
 
         # The General turns to the Master and asks for the word.
         self.hall.post("general", "master",
                        line(self.backend, self.space, "general", "greet_master",
-                            hall_tail=self.hall.tail_text()))
+                            hall_tail=self._view()))
         self.awake = True
 
     # -- the living loop -------------------------------------------------
@@ -77,7 +81,7 @@ class Realm:
             addr = {"wizard": "general", "general": "wizard",
                     "warrior": "general"}.get(role)
             out = line(self.backend, self.space, role, kind, heard=heard,
-                       hall_tail=h.tail_text())
+                       hall_tail=self._view())
             h.post(role, addr, out)
             return out
 
@@ -88,13 +92,13 @@ class Realm:
         say("wizard", "wizard_agrees", g)
         # The General opens the gate: a sortie for the Warrior.
         order = line(self.backend, self.space, "general", "order_warrior", heard=text,
-                     hall_tail=h.tail_text())
+                     hall_tail=self._view())
         h.post("general", "warrior", order)
 
         sortie = agents.warrior_sortie(self.space, order)
         h.post("warrior", "general",
                line(self.backend, self.space, "warrior", "warrior_reports", heard=text,
-                    hall_tail=h.tail_text()))
+                    hall_tail=self._view()))
         h.post("warrior", "general", sortie["report"])
 
         if sortie["escalate"]:
@@ -107,7 +111,7 @@ class Realm:
         # The General brings the settled council back to the Master.
         h.post("general", "master",
                line(self.backend, self.space, "general", "general_to_master", heard=text,
-                    hall_tail=h.tail_text()))
+                    hall_tail=self._view()))
 
     def authorize(self, domain: str) -> None:
         self.space.authorize(domain)
@@ -128,16 +132,16 @@ class Realm:
         # Each reminisces and writes its walls (bodies die nightly, walls persist).
         for role in ROLES:
             inside = line(self.backend, self.space, role, "inside_wall",
-                          hall_tail=h.tail_text())
+                          hall_tail=self._view())
             outside = line(self.backend, self.space, role, "outside_wall",
-                           hall_tail=h.tail_text())
+                           hall_tail=self._view())
             self.space.inside_wall_path(role).parent.mkdir(parents=True, exist_ok=True)
             self.space.inside_wall_path(role).write_text(inside.strip() + "\n")
             self.space.outside_wall_path(role).write_text(outside.strip() + "\n")
             print(ui.dim(f"  {ui.GLYPH.get(role, role)} wrote its walls."))
 
         # The Wizard sings the day's Chant — the one memory that crosses the night.
-        chant = line(self.backend, self.space, "wizard", "chant", hall_tail=h.tail_text())
+        chant = line(self.backend, self.space, "wizard", "chant", hall_tail=self._view())
         self.space.chant_path(self.day).write_text(chant.strip() + "\n")
         print("\n" + ui.hall_line("chant", None, chant.strip()) + "\n")
 

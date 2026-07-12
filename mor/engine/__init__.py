@@ -9,6 +9,7 @@ taint what comes from outside) that made the old harness trustworthy.
 
 from mor.engine.backend import (Backend, ChatResult, MockBackend, ScriptBackend,
                                  ServedBackend, ToolCall, flavored_line, make_backend)
+from mor.engine.compaction import hall_view
 from mor.engine.dome import Dome, probe_runtime
 from mor.engine.loop import think_and_act
 from mor.engine.tools import Tool, ToolContext, default_tools
@@ -17,5 +18,5 @@ __all__ = [
     "Backend", "ServedBackend", "MockBackend", "ScriptBackend", "ChatResult",
     "ToolCall", "flavored_line", "make_backend",
     "Tool", "ToolContext", "default_tools", "think_and_act",
-    "Dome", "probe_runtime",
+    "Dome", "probe_runtime", "hall_view",
 ]

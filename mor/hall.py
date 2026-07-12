@@ -31,6 +31,8 @@ class Hall:
         self.path = space.hall_path(day)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.echo = echo
+        self._fold = None    # cached fold of the older Hall (see engine.compaction)
+        self._fold_n = 0
 
     def post(self, speaker: str, addressee, text: str) -> dict:
         entry = {
