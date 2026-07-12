@@ -100,19 +100,9 @@ _USER_TASK = {
                     "and ready, and ask for his command.",
     "wizard_takes": "The Master just spoke to the realm: \"{heard}\". You always "
                     "catch his word first. In one plain-English line, contextualise "
-                    "what he wants and turn to the General to reason it through.",
-    "general_debates": "The Wizard just said: \"{heard}\". You honour him but test "
-                       "him. In one line, respond and propose grounding it, and ask "
-                       "the Wizard if the plan is fine.",
-    "wizard_agrees": "The General just proposed a plan: \"{heard}\". In one line, "
-                     "agree that it is fine and hand the turn on.",
-    "order_warrior": "You have agreed a plan. In one line, order the Warrior on a "
-                     "specific sortie about: \"{heard}\". Strict and clean.",
-    "warrior_reports": "The General ordered a sortie: \"{heard}\". You alone can leave "
-                       "the dome — if it needs the outside, use web_fetch (the General "
-                       "must have opened the gate; if it is shut, say so and ask for the "
-                       "Master's leave). Then report to the General in plain English what "
-                       "you did and everything you touched.",
+                    "what he wants and name who should take it up — the General to "
+                    "reason it through, or the Warrior directly for a plain research "
+                    "errand. The one you name speaks next.",
     "general_to_master": "The council is settled and the ground is checked. In one "
                          "line, bring where you stand to the Master and ask his word.",
     "chant": "It is dusk. Write the day's Chant: under 200 words, a short chant or "
@@ -122,6 +112,34 @@ _USER_TASK = {
     "outside_wall": "It is dusk. In two or three sentences, write what you make of "
                     "the other inhabitants after today.",
 }
+
+
+# The council guidance each face carries into an open turn — the scheduler runs
+# on names, so every line must call its addressee by name (the one named speaks
+# next; a line that names no one falls to the General, and a General with no one
+# left to name closes the round by turning to the Master).
+_COUNCIL_GUIDE = {
+    "wizard": "Press the plan, refine it, or assent — when it is fine, say so "
+              "plainly and hand the turn on (a conversation closes by mutual "
+              "agreement). You may send the Warrior on a research errand by name. "
+              "You never address the Master.",
+    "general": "Test what you heard against the record — honour the Wizard, take "
+               "nothing on faith. If the council needs ground truth, order the "
+               "Warrior on a specific sortie by name. When the council is settled, "
+               "turn to the Master with where you stand and ask his word.",
+    "warrior": "You alone can leave the dome — if the order needs the outside, use "
+               "web_fetch (the gate must already be open for that domain; if it is "
+               "shut, say so and ask that the Master's leave be sought). Do the work "
+               "with your tools first, then report in plain English what you did and "
+               "everything you touched, naming whom you report to (the General, "
+               "unless the Wizard sent you).",
+}
+
+
+def _council_task(role: str, prev: str, heard: str) -> str:
+    return (f"The {prev.capitalize()} just said to you: \"{short(heard, 200)}\". "
+            "Speak your one plain-English line in the Hall and name the one you "
+            f"address — the one you name speaks next. {_COUNCIL_GUIDE[role]}")
 
 
 def line(backend, space, role: str, kind: str, heard: str = "", hall_tail: str = "",
@@ -137,8 +155,11 @@ def line(backend, space, role: str, kind: str, heard: str = "", hall_tail: str =
     whether this turn pulled anything from beyond the dome.
     """
     system = _build_system(space, role, hall_tail)
-    user = _USER_TASK.get(kind, "Speak one plain-English line in the Hall.").format(
-        heard=short(heard, 200))
+    if kind.startswith("council_from_"):
+        user = _council_task(role, kind.removeprefix("council_from_"), heard)
+    else:
+        user = _USER_TASK.get(kind, "Speak one plain-English line in the Hall.").format(
+            heard=short(heard, 200))
     ctx = ToolContext(workspace=space.root / "population" / role / "workspace",
                       space=space, can_egress=(role == "warrior"),
                       tainted=taint_sink if taint_sink is not None else [],

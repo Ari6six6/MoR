@@ -144,6 +144,16 @@ def flavored_line(role: str, kind: str, heard: str = "") -> str:
         return options[int(h[:8], 16) % len(options)]
 
     short = " ".join((heard or "").split())[:60]
+    # The stand-in's one branch, stated in the open: the General presses the plan
+    # once, and when the Wizard hands it back agreed ("fine" / "send him"), he
+    # sends the Warrior — so the offline council walks the scheduler end to end
+    # (catch → debate → assent → sortie → report → close) and always terminates.
+    if kind == "council_from_wizard" and role == "general":
+        if "fine" in heard.lower() or "send him" in heard.lower():
+            return ("Warrior — the council is agreed. Go and see to it exactly as "
+                    "we said; touch nothing else, bring me everything you touched.")
+        return ("I follow you, Wizard, but I take nothing on faith. If it's real "
+                "the record shows it — a short sortie settles it. Is this fine?")
     table = {
         "wake": {
             "wizard": ["I am awake. I have read the night and the map of the outside. "
@@ -154,13 +164,19 @@ def flavored_line(role: str, kind: str, heard: str = "") -> str:
         "greet_master": ["All three of us are awake and ready, Master. What is your command?"],
         "wizard_takes": [f"I hear you, Master — you speak of {short}. Let me hold it to the "
                          "light. General, come reason with me."],
-        "general_debates": ["I follow you, Wizard, but I take nothing on faith. If it's real the "
-                            "record shows it — a short sortie settles it. Is this fine?"],
-        "wizard_agrees": ["Yes — that's fine. Send him; I'll fold what he brings into the map."],
-        "order_warrior": [f"Warrior — go and see to {short}. Do exactly that, touch nothing else, "
-                          "bring me everything you touched."],
-        "warrior_reports": ["I'm back, General. Did exactly as ordered, brought no snakes. "
-                            "Full report follows."],
+        "council_from_general": {
+            "wizard": ["Yes — that's fine. Send him; I'll fold what he brings into the map."],
+            "warrior": ["I'm back, General. Did exactly as ordered, brought no snakes. "
+                        "Full report follows."],
+        },
+        "council_from_wizard": {
+            "warrior": ["On my way — I'll do exactly that, touch nothing else, and "
+                        "report to the General with everything I touched."],
+        },
+        "council_from_warrior": {
+            "general": ["Master — we reasoned it through and the Warrior has been out. "
+                        "Here is where we stand. Your word?"],
+        },
         "general_to_master": ["Master — we reasoned it through and the Warrior has been out. "
                              "Here is where we stand. Your word?"],
         "chant": ["A short day, a long thought — / the seer dreamed, the general weighed, / "

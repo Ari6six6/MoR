@@ -16,13 +16,6 @@ from mor.engine.loop import _REFLECT_NUDGE
 from mor.engine.tools import _blocked_ip, _safe, _web_fetch, execute
 
 
-@pytest.fixture()
-def space(tmp_path, monkeypatch):
-    monkeypatch.setenv("MOR_HOME", str(tmp_path))
-    from mor.config import Space
-    return Space("test").ensure()
-
-
 def _ctx(space, role="warrior", can_egress=True):
     ws = space.root / "population" / role / "workspace"
     ws.mkdir(parents=True, exist_ok=True)

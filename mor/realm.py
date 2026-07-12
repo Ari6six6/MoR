@@ -12,7 +12,13 @@ from __future__ import annotations
 from mor.agents import ROLES, line
 from mor.hall import Hall
 from mor.engine import Dome, make_backend, hall_view
+from mor.scheduler import resolve_addressee
 from mor import ui
+
+# The council's leash: how many spoken turns one word of the Master may run
+# before the General is made to close honestly (bring where things stand to the
+# Master) rather than let the council talk the day away.
+_MAX_COUNCIL_TURNS = 10
 
 
 class Realm:
@@ -77,51 +83,43 @@ class Realm:
         h = self.hall
         # The Master's word — addressed to no one, caught automatically.
         h.post("master", None, text)
-
-        def say(role, kind, heard):
-            addr = {"wizard": "general", "general": "wizard",
-                    "warrior": "general"}.get(role)
-            out = line(self.backend, self.space, role, kind, heard=heard,
-                       hall_tail=self._view())
-            h.post(role, addr, out)
-            return out
-
-        # NOTE: this is a FIXED beat sequence, not yet real deliberation. The faces
-        # always speak in this order; the "assent" beat always assents; the Warrior
-        # beat always runs (though whether he actually egresses is the model's call).
-        # Genuine branching — a council that can decline, and dynamic turn-taking via
-        # the name-mention scheduler the spec describes — is the next cut. Until then,
-        # read these beats as choreography that gives real turns their stage.
+        before = len(self._tainted)
 
         # Rule 2: the Wizard always catches the Master's word first.
-        w = say("wizard", "wizard_takes", text)
-        # The General presses on it; the Wizard assents (a scripted close, for now).
-        g = say("general", "general_debates", w)
-        say("wizard", "wizard_agrees", g)
-        # The General hands the Warrior a sortie (he decides in his turn if it needs
-        # the outside; if not, he stays in and says so).
-        order = line(self.backend, self.space, "general", "order_warrior", heard=text,
-                     hall_tail=self._view())
-        h.post("general", "warrior", order)
-
-        # The Warrior carries it out for real — in his egress body, with web_fetch.
-        # Whatever he pulls from outside lands in the day's taint list.
-        before = len(self._tainted)
-        report = line(self.backend, self.space, "warrior", "warrior_reports", heard=order,
+        speaker = "wizard"
+        spoken = line(self.backend, self.space, "wizard", "wizard_takes", heard=text,
                       hall_tail=self._view(), taint_sink=self._tainted)
-        h.post("warrior", "general", report)
-        touched = self._tainted[before:]
 
-        # The General brings the settled council back to the Master — and if the
-        # Warrior brought anything from outside, it is flagged (the Eighth Evangelism:
-        # act on tainted input only with the Master's leave).
+        # The name-mention scheduler (THE_REALM §10.2): the face a line names
+        # speaks next — turns, not parallelism, and no fixed beats. The round
+        # closes when the General turns to the Master (§3.6: a conversation ends
+        # by agreement, and only the General speaks with him).
+        for _ in range(_MAX_COUNCIL_TURNS):
+            addressee = resolve_addressee(speaker, spoken)
+            if speaker == "general" and addressee == "master":
+                h.post("general", "master", self._flag_taint(spoken, before))
+                return
+            h.post(speaker, addressee, spoken)
+            speaker, prev = addressee, speaker
+            spoken = line(self.backend, self.space, speaker, f"council_from_{prev}",
+                          heard=spoken, hall_tail=self._view(),
+                          taint_sink=self._tainted)
+
+        # The leash: the council talked past the cap — the General closes honestly
+        # with where things stand rather than let the day wander.
         verdict = line(self.backend, self.space, "general", "general_to_master",
                        heard=text, hall_tail=self._view())
-        if touched:
-            verdict = (f"⚠ this rests on data the Warrior pulled from outside the dome "
-                       f"({', '.join(sorted(set(touched)))}) — tainted; your leave before "
-                       f"we act on it. " + verdict)
-        h.post("general", "master", verdict)
+        h.post("general", "master", self._flag_taint(verdict, before))
+
+    def _flag_taint(self, verdict: str, before: int) -> str:
+        """Flag a close that rests on outside data (the Eighth Evangelism: act on
+        tainted input only with the Master's leave)."""
+        touched = self._tainted[before:]
+        if not touched:
+            return verdict
+        return (f"⚠ this rests on data the Warrior pulled from outside the dome "
+                f"({', '.join(sorted(set(touched)))}) — tainted; your leave before "
+                f"we act on it. " + verdict)
 
     def authorize(self, domain: str) -> None:
         self.space.authorize(domain)
