@@ -1,22 +1,29 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=65"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mor"
 version = "0.1.0"
-description = "Masters of the Realm — a dome of embodied agents (Wizard, General, Warrior) you rule from on top."
+description = "Masters of the Realm — a dome of embodied agents built on the Hermes engine."
 readme = "README.md"
-requires-python = ">=3.9"
-# No third-party dependencies: the realm runs on the Python standard library.
-# The offline mind needs nothing; the served mind talks to your endpoint over
-# stdlib urllib.
-dependencies = []
+requires-python = ">=3.10"
+# MoR ships the vendored Hermes engine (hermes/), so it carries Hermes's deps.
+dependencies = [
+    "httpx>=0.27",
+    "prompt_toolkit>=3.0",
+]
 
-# The command is `opus` — a *work*, and a wink to whose it is. Deliberately NOT
-# `hermes`, so MoR can never clobber the real Hermes harness (and its `gpu serve`).
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pypdf>=4.0"]
+
+# The command is `opus` — never `hermes`. The vendored Hermes engine is the mind
+# under the realm; the realm is what the operator drives.
 [project.scripts]
 opus = "mor.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["mor*"]
+include = ["mor*", "hermes*"]
+
+[tool.setuptools.package-data]
+hermes = ["prompts/*.md", "toolbox/*.py"]
