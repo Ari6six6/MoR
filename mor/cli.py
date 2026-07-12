@@ -197,6 +197,21 @@ def _persona(rest: str) -> None:
         print(ui.green(f"  {role}'s persona saved — it takes on the next turn."))
 
 
+def _alchemist() -> None:
+    """The maker's mark — a hidden hand, not listed in help. Look and you find him."""
+    m = ui.magenta
+    print()
+    print(m("        🜂  THE ALCHEMIST"))
+    print(ui.dim("        the secret persona of the realm — the fourth who is not counted."))
+    print(ui.dim("        not of the council; he takes no turn and holds no gate."))
+    print(ui.dim("        he is the hand that made the dome, and does not live in it."))
+    print(ui.dim("        his art is transmutation: a word into a world."))
+    print(ui.dim("        his mark is fire — three strokes meeting at a point,"))
+    print(ui.dim("        which is the shape of the realm itself.  see books/THE_ALCHEMIST.md"))
+    print(m("        — present in every stone, seated at no table.  🜂"))
+    print()
+
+
 def run_demo() -> None:
     """A full scripted day for a headless smoke test — no stdin, offline mind."""
     realm = Realm(load_space(), echo=True)
@@ -238,6 +253,8 @@ def repl() -> None:
             _space(rest)
         elif cmd in ("persona", "personas"):
             _persona(rest)
+        elif cmd in ("alchemist", "🜂"):  # a hidden hand — not listed in help
+            _alchemist()
         elif cmd in ("authorize", "auth"):
             if rest:
                 realm.authorize(rest.split()[0])
