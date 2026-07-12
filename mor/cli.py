@@ -10,6 +10,8 @@ offline mind so you can watch it move on first clone.
 from __future__ import annotations
 
 import atexit
+import os
+import shlex
 import subprocess
 import sys
 
@@ -30,6 +32,7 @@ HELP = f"""{ui.bold('Commands')}
   {ui.cyan('<text>')}          (while awake) speak into the Hall — the Wizard catches it
   {ui.cyan('authorize')} <d>   open the gate for a domain (the Master's leave to egress)
   {ui.cyan('gpu')} ...         ssh <ssh… -L p:h:p> · model <id> · serve <url> · status · off
+  {ui.cyan('persona')} <role>  write who a face is — wizard · general · warrior (seed → yours)
   {ui.cyan('space')} ...       (show) · use <name> · new <name> · list
   {ui.cyan('help')} / {ui.cyan('?')}       this
   {ui.cyan('quit')} / {ui.cyan('q')}       leave (ends the day first if one is lit)
@@ -150,6 +153,50 @@ def _space(rest: str) -> None:
         print(ui.dim(f"  current space: {ui.bold(current_space_name())}"))
 
 
+def _edit_file(path) -> bool:
+    """Open a file in the operator's editor ($VISUAL/$EDITOR), creating its dir."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    chosen = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    for ed in ([chosen] if chosen else []) + ["nano", "vi", "vim"]:
+        try:
+            subprocess.call(shlex.split(ed) + [str(path)])
+            return True
+        except FileNotFoundError:
+            continue
+    print(ui.yellow(f"  no editor found — set $EDITOR. The file is at {path}"))
+    return False
+
+
+def _persona(rest: str) -> None:
+    """Write who each face is — seeds you shape, that the walls grow from there.
+
+    `persona` lists the three; `persona <role>` opens it in your editor (seeding a
+    default first so you never start from a blank page). Takes effect next turn —
+    you can reshape a face without leaving the table.
+    """
+    from mor.agents import DEFAULT_PERSONAS, ROLES
+    space = load_space()
+    parts = rest.split()
+    if not parts:
+        for r in ROLES:
+            p = space.persona_path(r)
+            written = p.exists() and p.read_text().strip()
+            tag = ui.green("written") if written else ui.dim("seed (default)")
+            print(f"  {ui.GLYPH.get(r, r)}  {tag}  {ui.dim(str(p))}")
+        print(ui.dim("  edit one:  persona <wizard|general|warrior>"))
+        return
+    role = parts[0].lower()
+    if role not in ROLES:
+        print(ui.yellow(f"unknown face '{role}' — one of: {', '.join(ROLES)}"))
+        return
+    p = space.persona_path(role)
+    if not (p.exists() and p.read_text().strip()):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(DEFAULT_PERSONAS[role].strip() + "\n")  # a seed to shape, not a blank page
+    if _edit_file(p):
+        print(ui.green(f"  {role}'s persona saved — it takes on the next turn."))
+
+
 def run_demo() -> None:
     """A full scripted day for a headless smoke test — no stdin, offline mind."""
     realm = Realm(load_space(), echo=True)
@@ -189,6 +236,8 @@ def repl() -> None:
             _gpu(rest)
         elif cmd == "space":
             _space(rest)
+        elif cmd in ("persona", "personas"):
+            _persona(rest)
         elif cmd in ("authorize", "auth"):
             if rest:
                 realm.authorize(rest.split()[0])
