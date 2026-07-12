@@ -58,9 +58,13 @@ cd MoR
 
 > **Mind the `./`.** If you already have the old Hermes harness installed, a bare
 > `hermes` will run *that* (its banner says "sit down: debate · send it off: go"),
-> not MoR. Always start MoR with `./hermes` (or `python3 -m mor`). To claim a bare
-> `hermes` for MoR, `pip install -e .` — but that replaces the old global command,
-> since they share the name.
+> not MoR. Always start MoR with `./hermes` (the local wrapper) or `python3 -m mor`.
+> The `./hermes` wrapper is **local only** — it never touches your global `hermes`.
+>
+> **Do NOT expect `pip install -e .` to give you `hermes`.** MoR installs as `mor`,
+> deliberately, so it can never overwrite the real Hermes harness and its
+> `gpu serve`. After installing, the realm opens with `mor`; your `hermes` stays
+> your Hermes.
 
 Then, inside the shell:
 
