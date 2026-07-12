@@ -23,6 +23,8 @@ class ToolContext:
     space: object = None          # carries the gate (egress_allowed / allowlist)
     can_egress: bool = False      # only the Warrior's body may reach the outside
     tainted: list = field(default_factory=list)  # domains pulled from outside
+    dome: object = None           # the bodies (Dome); None -> disembodied
+    role: str = ""                # which face this context belongs to
 
 
 @dataclass
@@ -93,6 +95,17 @@ def _web_fetch(args, ctx):
         return f"ERROR reaching {domain}: {type(e).__name__}"
 
 
+def _run_shell(args, ctx):
+    cmd = (args.get("command") or "").strip()
+    if not cmd:
+        return "ERROR: no command"
+    if ctx.dome is None or not getattr(ctx.dome, "embodied", False):
+        return "ERROR: you have no body to run commands in (the dome is not up)."
+    rc, out, err = ctx.dome.exec(ctx.role, cmd)
+    tail = (out or "") + (("\n" + err) if err and err.strip() else "")
+    return f"[exit {rc}]\n{tail[:4000]}" if tail.strip() else f"[exit {rc}] (no output)"
+
+
 def default_tools(ctx: ToolContext) -> list:
     ts = [
         Tool("read_file", "Read a file in your workspace.",
@@ -105,6 +118,12 @@ def default_tools(ctx: ToolContext) -> list:
         Tool("list_dir", "List a directory in your workspace.",
              {"type": "object", "properties": {"path": {"type": "string"}}}, _list_dir),
     ]
+    if ctx.dome is not None and getattr(ctx.dome, "embodied", False):
+        ts.append(Tool(
+            "run_shell", "Run a shell command inside your own body (a container on "
+            "the dome). Only the Warrior's body can reach the outside.",
+            {"type": "object", "properties": {"command": {"type": "string"}},
+             "required": ["command"]}, _run_shell))
     if ctx.can_egress:
         ts.append(Tool(
             "web_fetch", "Fetch a URL from outside the dome (Warrior only; the "

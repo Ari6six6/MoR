@@ -12,7 +12,7 @@ from __future__ import annotations
 from mor import agents, world
 from mor.agents import ROLES, line
 from mor.hall import Hall
-from mor.engine import make_backend
+from mor.engine import Dome, make_backend
 from mor import ui
 
 
@@ -21,6 +21,7 @@ class Realm:
         self.space = space
         self.echo = echo
         self.backend, self.mode = make_backend()
+        self.dome = None
         self.day = None
         self.hall = None
         self.awake = False
@@ -37,6 +38,12 @@ class Realm:
         print(ui.bold(ui.green(
             f"\n  ☀  Day {self.day} breaks over the realm  ")) + ui.dim(
             f"(mind: {self.mode})") + "\n")
+
+        # Raise the bodies on the dome (degrades to disembodied with no runtime).
+        self.dome = Dome(self.space, log=lambda m: print(ui.dim(m)))
+        self.dome.up(list(ROLES))
+        self.space.dome = self.dome
+        print(ui.dim(f"  dome: {'embodied — three bodies risen' if self.dome.embodied else 'disembodied (no container runtime)'}\n"))
 
         # The morning song: yesterday's Chant, first thing in the Hall.
         prev = self.space.chant_path(self.day - 1)
@@ -133,6 +140,13 @@ class Realm:
         chant = line(self.backend, self.space, "wizard", "chant", hall_tail=h.tail_text())
         self.space.chant_path(self.day).write_text(chant.strip() + "\n")
         print("\n" + ui.hall_line("chant", None, chant.strip()) + "\n")
+
+        # Bodies die at dusk (harvested first); the walls and the Chant persist.
+        if self.dome:
+            self.dome.down(list(ROLES))
+            self.dome = None
+            if hasattr(self.space, "dome"):
+                self.space.dome = None
 
         self.space.commit_day(self.day)
         print(ui.dim(f"  Day {self.day} is sealed. The realm sleeps. "

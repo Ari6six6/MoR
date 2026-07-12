@@ -136,7 +136,8 @@ def line(backend, space, role: str, kind: str, heard: str = "", hall_tail: str =
     user = _USER_TASK.get(kind, "Speak one plain-English line in the Hall.").format(
         heard=short(heard, 200))
     ctx = ToolContext(workspace=space.root / "population" / role / "workspace",
-                      space=space, can_egress=(role == "warrior"))
+                      space=space, can_egress=(role == "warrior"),
+                      dome=getattr(space, "dome", None), role=role)
     spoken, _tainted = think_and_act(
         backend, role=role, kind=kind, heard=heard, system=system, user=user,
         tools=default_tools(ctx), ctx=ctx, log=log)
