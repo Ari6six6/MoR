@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# The door into the realm without installing anything: ./hermes
+# (or `pip install -e .` once, then just `hermes`)
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 -m mor "$@"

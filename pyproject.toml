@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mor"
+version = "0.1.0"
+description = "Masters of the Realm — a dome of embodied agents (Wizard, General, Warrior) you rule from on top."
+readme = "README.md"
+requires-python = ">=3.9"
+# No third-party dependencies: the realm runs on the Python standard library.
+# The offline mind needs nothing; the served mind talks to your endpoint over
+# stdlib urllib.
+dependencies = []
+
+[project.scripts]
+hermes = "mor.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mor*"]

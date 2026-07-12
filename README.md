@@ -42,19 +42,49 @@ Read them in order. They are the realm's scripture — the agents read them too.
 
 ---
 
-## Where the building starts
+## Run it
 
-The spine is small — most of the realm already exists in the Hermes machine and only
-needs to be surfaced. See **[The Realm §10](books/THE_REALM.md#10-what-gets-retired-what-survives-whats-new)**
-for exactly what's new versus what's a seam to reuse. In short, build:
+The realm runs on the Python standard library — **no pip installs required.**
 
-1. **The Hall** — one append-only shared transcript, streamed live.
-2. **The scheduler** — name someone in the Hall, they run next (turns, one GPU).
-3. **`light` / `dark`** — the day's open and close, with the always-queued Master input.
-4. **The Chant** — the Wizard's dusk song, auto-posted at dawn.
-5. **The two walls** — the dusk ritual; bodies die nightly, walls persist and re-mount.
+```sh
+git clone https://github.com/Ari6six6/MoR.git
+cd MoR
+./hermes            # or: pip install -e .  &&  hermes
+```
 
-Then, on top: the **Theory of the World** — the Wizard's map of everywhere the realm
-has reached.
+Then, inside the shell:
+
+```
+light               # break a new day — the realm wakes and beams you in
+<type anything>     # speak into the Hall; the Wizard always catches it first
+dark                # end the day — walls written, the Chant sung, sleep
+```
+
+Want to watch a whole day move without typing? `./hermes --demo`.
+
+### The mind
+
+Out of the box the realm runs on a **built-in offline mind** — a deterministic,
+in-character stand-in so you can *see* it breathe on first clone. Point it at your
+real model when you have one served (vLLM / llama.cpp, OpenAI-compatible):
+
+```
+gpu serve http://localhost:8000/v1 [model-name]   # takes the throne at next `light`
+gpu off                                            # back to the offline mind
+```
+
+## What runs today, and what's next
+
+**Running now (`mor/`):** the Hall (one shared, plain-English-only transcript,
+streamed live and kept on disk), the wake order, the scheduler and the closed
+council loop, `light`/`dark`, the Chant (written at dusk, sung first at dawn), the
+two walls (written nightly, persisted per inhabitant), the chain-of-command gate
+(the Warrior only crosses to a domain the Master has `authorize`d), and the
+Wizard's **Theory of the World** (a JSON map that grows with every sortie).
+
+**Next**, per **[The Realm §10](books/THE_REALM.md#10-what-gets-retired-what-survives-whats-new)**:
+give each face a real Docker body on the dome (the embodiment already sketched in the
+Hermes `village.py`), and write the three personas into `personas/{wizard,general,warrior}.md`
+— they're living seeds; the walls grow them from there.
 
 *Here begins the Realm. It is written down so it will not be lost.*
