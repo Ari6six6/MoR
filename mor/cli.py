@@ -14,6 +14,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 
 from mor import ui
 from mor.config import (Space, current_space_name, gpu_state_path, load_json,
@@ -89,12 +90,37 @@ def _gpu(rest: str) -> None:
             print(ui.dim("  e.g. gpu ssh -p 11808 root@87.102.11.146 -L 8080:localhost:8080"))
             return
         _kill_tunnel()
-        cmd = ["ssh", "-N", "-o", "ServerAliveInterval=30",
-               "-o", "ExitOnForwardFailure=yes"] + ssh_args
+        # The tunnel runs headless: it must never read this terminal's stdin (or it
+        # fights the REPL for the keyboard) and never stop for a host-key prompt.
+        # accept-new adds an unknown key but still refuses a *changed* one; BatchMode
+        # means no password/passphrase prompt — key auth must work on its own.
+        cmd = ["ssh", "-N",
+               "-o", "StrictHostKeyChecking=accept-new",
+               "-o", "BatchMode=yes",
+               "-o", "ServerAliveInterval=30",
+               "-o", "ExitOnForwardFailure=yes",
+               "-o", "ConnectTimeout=15"] + ssh_args
         try:
-            _TUNNEL = subprocess.Popen(cmd)
+            _TUNNEL = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.PIPE)
         except FileNotFoundError:
             print(ui.red("  ssh not found on PATH."))
+            return
+        time.sleep(1.5)  # give it a moment to connect (or fail) before we report
+        if _TUNNEL.poll() is not None:
+            err = ""
+            try:
+                err = (_TUNNEL.stderr.read() or b"").decode("utf-8", "replace").strip()
+            except Exception:  # noqa: BLE001
+                pass
+            _TUNNEL = None
+            print(ui.red("  ⛓  tunnel failed to come up."))
+            if err:
+                print(ui.dim("     " + err.splitlines()[-1][:200]))
+            print(ui.dim("     key auth must work on its own (BatchMode is on, so no "
+                         "password prompt). Add your key to the box or ssh-agent, or test "
+                         "the exact ssh command in a normal shell first."))
             return
         base_url = f"http://localhost:{port}/v1"
         state.update(base_url=base_url, served=True, ssh=" ".join(ssh_args),
