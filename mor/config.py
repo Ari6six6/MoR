@@ -107,6 +107,9 @@ class Space:
     def world_path(self) -> Path:
         return self.root / "world.json"
 
+    def grimoire_path(self) -> Path:
+        return self.root / "grimoire.json"
+
     def gate_path(self) -> Path:
         return self.root / "gate.json"
 

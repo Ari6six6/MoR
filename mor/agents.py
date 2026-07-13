@@ -13,7 +13,7 @@ keeps the realm runnable. The walls then evolve who each one is, night by night.
 
 from __future__ import annotations
 
-from mor import world
+from mor import grimoire, world
 from mor.engine import ToolContext, default_tools, think_and_act
 
 ROLES = ("wizard", "general", "warrior")
@@ -89,6 +89,7 @@ def _build_system(space, role: str, hall_tail: str) -> str:
         ROSTER,
         read_wall(space, role),
         "The Theory of the World — " + world.summary(space),
+        "The grimoire (the realm's claims) — " + grimoire.summary(space),
         "The Hall so far (recent):\n" + (hall_tail or "(quiet)"),
     ]))
 
@@ -122,49 +123,69 @@ _COUNCIL_GUIDE = {
     "wizard": "Press the plan, refine it, or assent — when it is fine, say so "
               "plainly and hand the turn on (a conversation closes by mutual "
               "agreement). You may send the Warrior on a research errand by name. "
-              "You never address the Master.",
+              "As you learn, record what you come to believe as claims in the "
+              "grimoire — each with its rung (how you know it) and a test that "
+              "would prove it wrong. You never address the Master.",
     "general": "Test what you heard against the record — honour the Wizard, take "
-               "nothing on faith. If the council needs ground truth, order the "
-               "Warrior on a specific sortie by name. When the council is settled, "
-               "turn to the Master with where you stand and ask his word.",
+               "nothing on faith. Audit the grimoire: what the realm leans on but "
+               "has not proven is where you send the Warrior. If the council needs "
+               "ground truth, order him on a specific sortie by name. When the "
+               "council is settled, turn to the Master with where you stand and "
+               "ask his word.",
     "warrior": "You alone can leave the dome — if the order needs the outside, use "
                "web_fetch (the gate must already be open for that domain; if it is "
-               "shut, say so and ask that the Master's leave be sought). Do the work "
-               "with your tools first, then report in plain English what you did and "
-               "everything you touched, naming whom you report to (the General, "
-               "unless the Wizard sent you).",
+               "shut, say so and ask that the Master's leave be sought). When sent "
+               "to study something, read the grimoire first and test its claims "
+               "rather than reading from scratch; mark which held and which broke. "
+               "Do the work with your tools first, then report in plain English "
+               "what you did and everything you touched, naming whom you report to "
+               "(the General, unless the Wizard sent you).",
 }
 
 
-def _council_task(role: str, prev: str, heard: str) -> str:
-    return (f"The {prev.capitalize()} just said to you: \"{short(heard, 200)}\". "
+def _council_task(space, role: str, prev: str, heard: str) -> str:
+    task = (f"The {prev.capitalize()} just said to you: \"{short(heard, 200)}\". "
             "Speak your one plain-English line in the Hall and name the one you "
             f"address — the one you name speaks next. {_COUNCIL_GUIDE[role]}")
+    if role == "general":
+        best = grimoire.next_to_test(space)
+        if best is not None:
+            task += (f" The grimoire's most load-bearing unchecked claim is: "
+                     f"\"{best['text']}\" ({best['id']}). Before you settle the "
+                     "council, consider sending the Warrior to test it.")
+    return task
 
 
 def line(backend, space, role: str, kind: str, heard: str = "", hall_tail: str = "",
-         taint_sink=None, log=lambda *_: None) -> str:
+         taint_sink=None, grimoire_sink=None, log=lambda *_: None) -> str:
     """Ask one face to speak once for a given beat of the day — through the engine.
 
-    The face gets its voice (persona + roster + walls + world + Hall tail) and its
-    hands (workspace tools; the Warrior alone gets egress), and thinks→acts until
-    it says its line. The offline mind short-circuits to one in-character line.
+    The face gets its voice (persona + roster + walls + world + grimoire + Hall
+    tail) and its hands (workspace tools; the Warrior alone gets egress), and
+    thinks→acts until it says its line. The offline mind short-circuits to one
+    in-character line.
 
     `taint_sink`, when given, is the list the tools record outside-touched domains
-    into (the Eighth Evangelism): a caller passes the day's taint list so it can see
-    whether this turn pulled anything from beyond the dome.
+    into (the Eighth Evangelism); `grimoire_sink` is the twin for claims logged
+    this turn (subject, id) — a caller passes the day's lists so it can see what a
+    turn pulled from beyond the dome and what it wrote into the book.
     """
     system = _build_system(space, role, hall_tail)
     if kind.startswith("council_from_"):
-        user = _council_task(role, kind.removeprefix("council_from_"), heard)
+        user = _council_task(space, role, kind.removeprefix("council_from_"), heard)
     else:
         user = _USER_TASK.get(kind, "Speak one plain-English line in the Hall.").format(
             heard=short(heard, 200))
     ctx = ToolContext(workspace=space.root / "population" / role / "workspace",
                       space=space, can_egress=(role == "warrior"),
                       tainted=taint_sink if taint_sink is not None else [],
+                      grimoire_touched=grimoire_sink if grimoire_sink is not None else [],
                       dome=getattr(space, "dome", None), role=role)
+    # A Warrior on a council turn does the real reading — give his sortie a long
+    # leash; every other turn keeps the conversational cadence of eight.
+    on_sortie = role == "warrior" and kind.startswith("council_from_")
+    extra = {"max_steps": 24} if on_sortie else {}
     spoken, _tainted = think_and_act(
         backend, role=role, kind=kind, heard=heard, system=system, user=user,
-        tools=default_tools(ctx), ctx=ctx, log=log)
+        tools=default_tools(ctx), ctx=ctx, log=log, **extra)
     return spoken

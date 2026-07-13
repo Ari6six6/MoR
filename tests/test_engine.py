@@ -12,8 +12,9 @@ import pytest
 from mor.engine import (Dome, MockBackend, ScriptBackend, ToolContext,
                         default_tools, hall_view, think_and_act)
 from mor.engine.backend import Backend, ChatResult, ToolCall
-from mor.engine.loop import _REFLECT_NUDGE
-from mor.engine.tools import _blocked_ip, _safe, _web_fetch, execute
+from mor.engine.loop import _BUDGET_NUDGE, _REFLECT_NUDGE
+from mor.engine.tools import (_blocked_ip, _read_file, _safe, _search_workspace,
+                              _web_fetch, execute)
 
 
 def _ctx(space, role="warrior", can_egress=True):
@@ -68,6 +69,71 @@ def test_reflect_reflex_pushes_to_think_after_acting_without_reasoning(space):
     think_and_act(b, role="wizard", kind="wake", heard="", system="s", user="u",
                   tools=default_tools(ctx), ctx=ctx)
     assert any(m.get("content") == _REFLECT_NUDGE for m in b.last)
+
+
+# --- sortie tooling: paginated reads, workspace search, the budget valve ----
+def test_read_file_pages_a_long_file_without_dropping_any(space):
+    ctx = _ctx(space, role="wizard", can_egress=False)
+    body = "".join(f"line {i}\n" for i in range(3000))  # well past one 8k window
+    (ctx.workspace / "big.txt").write_text(body)
+
+    first = _read_file({"path": "big.txt"}, ctx)
+    assert "[TRUNCATED:" in first and "offset=8000" in first
+    # follow the notice — the second window continues exactly where the first ended
+    second = _read_file({"path": "big.txt", "offset": 8000}, ctx)
+    assert body[8000:8000 + 20] in second
+    # a small file is returned whole, with no notice at all
+    (ctx.workspace / "small.txt").write_text("just a little")
+    assert _read_file({"path": "small.txt"}, ctx) == "just a little"
+
+
+def test_search_workspace_finds_matches_with_locations(space):
+    ctx = _ctx(space, role="wizard", can_egress=False)
+    (ctx.workspace / "a.py").write_text("def foo():\n    return 1\n")
+    (ctx.workspace / "b.py").write_text("x = foo()\n")
+    out = _search_workspace({"pattern": r"foo"}, ctx)
+    assert "a.py:1:" in out and "b.py:1:" in out
+
+
+def test_search_workspace_caps_and_reports_it(space):
+    ctx = _ctx(space, role="wizard", can_egress=False)
+    (ctx.workspace / "many.txt").write_text("hit\n" * 200)
+    out = _search_workspace({"pattern": "hit"}, ctx)
+    assert out.count("many.txt:") == 50 and "capped at 50" in out
+
+
+def test_search_workspace_rejects_bad_regex(space):
+    ctx = _ctx(space, role="wizard", can_egress=False)
+    assert _search_workspace({"pattern": "("}, ctx).startswith("ERROR: bad regex")
+
+
+def test_search_workspace_path_escape_is_blocked(space):
+    ctx = _ctx(space, role="wizard", can_egress=False)
+    out = execute(default_tools(ctx),
+                  ToolCall("c", "search_workspace",
+                           '{"pattern": "x", "path": "../../etc"}'), ctx)
+    assert out.startswith("ERROR")
+
+
+def test_budget_valve_fires_once_with_two_steps_left(space):
+    """On a long leash, the loop warns the face once when two steps remain — so it
+    lands its answer instead of being cut off cold."""
+    ctx = _ctx(space, role="warrior", can_egress=False)
+    (ctx.workspace / "f").write_text("x")
+
+    class AlwaysActs(Backend):
+        def __init__(self):
+            self.seen = []
+
+        def chat(self, messages, tools=None):
+            self.seen = list(messages)
+            return ChatResult(content="working",
+                              tool_calls=[ToolCall("c", "read_file", '{"path": "f"}')])
+
+    b = AlwaysActs()
+    think_and_act(b, role="warrior", kind="council_from_general", heard="", system="s",
+                  user="u", tools=default_tools(ctx), ctx=ctx, max_steps=4)
+    assert sum(1 for m in b.seen if m.get("content") == _BUDGET_NUDGE) == 1
 
 
 # --- the gate (finding #1) -------------------------------------------------

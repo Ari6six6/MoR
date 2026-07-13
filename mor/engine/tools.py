@@ -21,6 +21,7 @@ network. With it, an open gate reaches only the public internet.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -34,6 +35,7 @@ class ToolContext:
     tainted: list = field(default_factory=list)  # domains pulled from outside
     dome: object = None           # the bodies (Dome); None -> disembodied
     role: str = ""                # which face this context belongs to
+    grimoire_touched: list = field(default_factory=list)  # (subject, id) claims logged this turn
 
 
 @dataclass
@@ -57,11 +59,72 @@ def _safe(ctx: ToolContext, rel: str) -> Path:
     return p
 
 
+_READ_WINDOW = 8000  # chars handed back in one read; the rest is paged, never dropped
+
+
 def _read_file(args, ctx):
     p = _safe(ctx, args.get("path", ""))
     if not p.exists():
         return f"ERROR: no such file: {args.get('path')}"
-    return p.read_text("utf-8", "replace")[:8000]
+    try:
+        offset = max(0, int(args.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    text = p.read_text("utf-8", "replace")
+    chunk = text[offset:offset + _READ_WINDOW]
+    remaining = len(text) - (offset + len(chunk))
+    if remaining > 0:
+        # No silent truncation: the face is told exactly what it hasn't seen and
+        # how to page to it — a blind spot it can register, not one it can't.
+        chunk += (f"\n\n[TRUNCATED: {remaining:,} characters remain. Call read_file "
+                  f"with offset={offset + _READ_WINDOW} to continue.]")
+    return chunk
+
+
+def _looks_binary(raw: bytes) -> bool:
+    return b"\x00" in raw[:1024]
+
+
+def _search_workspace(args, ctx):
+    """Grep across the workspace — the primitive that lets a face follow an edge
+    (who calls this? where is this set?) without opening every file by hand."""
+    pattern = args.get("pattern", "")
+    if not pattern:
+        return "ERROR: no pattern"
+    try:
+        compiled = re.compile(pattern)
+    except re.error as e:
+        return f"ERROR: bad regex: {e}"
+    root = _safe(ctx, args.get("path", "."))
+    if not root.exists():
+        return f"ERROR: no such path: {args.get('path')}"
+    base = ctx.workspace.resolve()
+    results, capped = [], False
+    for path in sorted(root.rglob("*") if root.is_dir() else [root]):
+        if not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > 1_000_000:
+                continue
+            raw = path.read_bytes()
+            if _looks_binary(raw):
+                continue
+            text = raw.decode("utf-8", "replace")
+        except OSError:
+            continue
+        rel = path.relative_to(base) if base in path.parents or path == base else path.name
+        for i, ln in enumerate(text.splitlines(), 1):
+            if compiled.search(ln):
+                results.append(f"{rel}:{i}: {ln.strip()[:200]}")
+                if len(results) >= 50:
+                    capped = True
+                    break
+        if capped:
+            break
+    if not results:
+        return "no matches"
+    tail = "\n[capped at 50 matches — narrow the pattern]" if capped else ""
+    return "\n".join(results) + tail
 
 
 def _write_file(args, ctx):
@@ -191,10 +254,71 @@ def _run_shell(args, ctx):
     return f"[exit {rc}]\n{tail[:4000]}" if tail.strip() else f"[exit {rc}] (no output)"
 
 
+# -- the grimoire: the realm's book of claims (its first subject-matter memory) --
+# world.py maps the *places* the realm has touched; the grimoire holds what it has
+# come to *believe* — and, unlike a narrative, a claim can be wrong, which is what
+# makes a second look worth taking. These three hands write and read that book.
+
+def _grimoire_record(args, ctx):
+    if ctx.space is None:
+        return "ERROR: no realm to write the grimoire in"
+    subject = (args.get("subject") or "").strip()
+    text = (args.get("text") or "").strip()
+    if not subject or not text:
+        return "ERROR: a claim needs both a subject and text"
+    rung = (args.get("rung") or "inferred").strip().lower()
+    from mor import grimoire
+    if rung not in grimoire.RUNGS:
+        return f"ERROR: rung must be one of {', '.join(grimoire.RUNGS)}"
+    depends_on = args.get("depends_on") or []
+    if isinstance(depends_on, str):
+        depends_on = [depends_on]
+    cid = grimoire.record_claim(ctx.space, subject, text, rung,
+                                test=args.get("test", ""), depends_on=depends_on)
+    ctx.grimoire_touched.append((subject, cid))
+    return f"recorded {cid} in [{subject}] ({rung}): {text}"
+
+
+def _grimoire_mark(args, ctx):
+    if ctx.space is None:
+        return "ERROR: no realm to write the grimoire in"
+    subject = (args.get("subject") or "").strip()
+    cid = (args.get("claim_id") or "").strip()
+    status = (args.get("status") or "").strip().lower()
+    from mor import grimoire
+    if status not in grimoire.STATUSES:
+        return f"ERROR: status must be one of {', '.join(grimoire.STATUSES)}"
+    ok = grimoire.mark_claim(ctx.space, subject, cid, status,
+                             note=args.get("note", ""), rung=args.get("rung"))
+    if not ok:
+        return f"ERROR: no claim {cid} in [{subject}]"
+    ctx.grimoire_touched.append((subject, cid))
+    return f"marked {cid} in [{subject}] {status}"
+
+
+def _grimoire_read(args, ctx):
+    if ctx.space is None:
+        return "ERROR: no realm to read the grimoire from"
+    from mor import grimoire
+    return grimoire.dump(ctx.space, subject=(args.get("subject") or "").strip() or None)
+
+
+def _map_workspace(args, ctx):
+    """Rank the Python modules under a path by import-centrality — where to look
+    first, before reading a single file."""
+    root = _safe(ctx, args.get("path", "."))
+    if not root.exists():
+        return f"ERROR: no such path: {args.get('path')}"
+    from mor import map_topology
+    return map_topology.summary(root)
+
+
 def default_tools(ctx: ToolContext) -> list:
     ts = [
-        Tool("read_file", "Read a file in your workspace.",
-             {"type": "object", "properties": {"path": {"type": "string"}},
+        Tool("read_file", "Read a file in your workspace. Pass offset to page "
+             "past a truncation notice and read further into a long file.",
+             {"type": "object", "properties": {"path": {"type": "string"},
+                                               "offset": {"type": "integer"}},
               "required": ["path"]}, _read_file),
         Tool("write_file", "Write a file in your workspace.",
              {"type": "object", "properties": {"path": {"type": "string"},
@@ -202,6 +326,40 @@ def default_tools(ctx: ToolContext) -> list:
               "required": ["path", "content"]}, _write_file),
         Tool("list_dir", "List a directory in your workspace.",
              {"type": "object", "properties": {"path": {"type": "string"}}}, _list_dir),
+        Tool("search_workspace", "Search your workspace for a regex pattern "
+             "(returns path:line: text). Find who calls a function, or where a "
+             "name is set, without opening every file.",
+             {"type": "object", "properties": {"pattern": {"type": "string"},
+                                               "path": {"type": "string"}},
+              "required": ["pattern"]}, _search_workspace),
+        Tool("grimoire_record", "Record a claim in the grimoire — the realm's book "
+             "of beliefs. rung is how you know it: inferred, observed, computed, or "
+             "executed. Give a test that would prove it wrong, and depends_on for "
+             "claim ids it leans on.",
+             {"type": "object", "properties": {
+                 "subject": {"type": "string"}, "text": {"type": "string"},
+                 "rung": {"type": "string",
+                          "enum": ["inferred", "observed", "computed", "executed"]},
+                 "test": {"type": "string"},
+                 "depends_on": {"type": "array", "items": {"type": "string"}}},
+              "required": ["subject", "text", "rung"]}, _grimoire_record),
+        Tool("grimoire_mark", "Mark a claim tested: held (it survived), broken (it "
+             "failed), or unchecked. Optionally raise its rung and leave a note.",
+             {"type": "object", "properties": {
+                 "subject": {"type": "string"}, "claim_id": {"type": "string"},
+                 "status": {"type": "string",
+                            "enum": ["held", "broken", "unchecked"]},
+                 "note": {"type": "string"}, "rung": {"type": "string"}},
+              "required": ["subject", "claim_id", "status"]}, _grimoire_mark),
+        Tool("grimoire_read", "Read the grimoire — one subject's claims, or the "
+             "list of subjects if none is named.",
+             {"type": "object", "properties": {"subject": {"type": "string"}}},
+             _grimoire_read),
+        Tool("map_workspace", "Rank the Python modules under a path by import-"
+             "centrality (most imported first) — where to look first in an "
+             "unfamiliar codebase.",
+             {"type": "object", "properties": {"path": {"type": "string"}}},
+             _map_workspace),
     ]
     if ctx.dome is not None and getattr(ctx.dome, "embodied", False):
         ts.append(Tool(

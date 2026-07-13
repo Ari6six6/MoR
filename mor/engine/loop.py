@@ -25,6 +25,10 @@ _REFLECT_NUDGE = (
     "next move. Do not call another tool until you have thought."
 )
 
+_BUDGET_NUDGE = (
+    "Two steps remain. Stop exploring; consolidate what you have and say your line."
+)
+
 
 def think_and_act(backend, *, role: str, kind: str, heard: str, system: str,
                   user: str, tools: list, ctx, log=lambda *_: None,
@@ -43,8 +47,16 @@ def think_and_act(backend, *, role: str, kind: str, heard: str, system: str,
     openai_tools = [t.openai() for t in tools] if tools else None
     act_streak = 0
     last_text = ""
+    warned = False
 
-    for _ in range(max_steps):
+    for step in range(max_steps):
+        # The budget valve: with two steps left on a long leash, tell the face once
+        # to stop exploring and land its answer — so it consolidates rather than
+        # getting cut off mid-reach and made to speak cold.
+        if not warned and step == max_steps - 2 and max_steps > 2:
+            messages.append({"role": "user", "content": _BUDGET_NUDGE})
+            warned = True
+
         res = backend.chat(messages, openai_tools)
         if not res.tool_calls:
             # A plain-English answer — this is the face's line in the Hall.

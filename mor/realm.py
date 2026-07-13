@@ -13,7 +13,7 @@ from mor.agents import ROLES, line
 from mor.hall import Hall
 from mor.engine import Dome, make_backend, hall_view
 from mor.scheduler import resolve_addressee
-from mor import ui
+from mor import grimoire, ui
 
 # The council's leash: how many spoken turns one word of the Master may run
 # before the General is made to close honestly (bring where things stand to the
@@ -28,6 +28,7 @@ class Realm:
         self.backend, self.mode = make_backend()
         self.dome = None
         self._tainted = []
+        self._grimoire_touched = []  # (subject, id) claims logged this day
         self.day = None
         self.hall = None
         self.awake = False
@@ -46,6 +47,7 @@ class Realm:
         self.day = self.space.next_day_number()
         self.hall = Hall(self.space, self.day, echo=self.echo)
         self._tainted = []  # domains the Warrior pulls from outside this day
+        self._grimoire_touched = []  # claims the council writes into the book today
         print(ui.bold(ui.green(
             f"\n  ☀  Day {self.day} breaks over the realm  ")) + ui.dim(
             f"(mind: {self.mode})") + "\n")
@@ -84,11 +86,13 @@ class Realm:
         # The Master's word — addressed to no one, caught automatically.
         h.post("master", None, text)
         before = len(self._tainted)
+        before_g = len(self._grimoire_touched)
 
         # Rule 2: the Wizard always catches the Master's word first.
         speaker = "wizard"
         spoken = line(self.backend, self.space, "wizard", "wizard_takes", heard=text,
-                      hall_tail=self._view(), taint_sink=self._tainted)
+                      hall_tail=self._view(), taint_sink=self._tainted,
+                      grimoire_sink=self._grimoire_touched)
 
         # The name-mention scheduler (THE_REALM §10.2): the face a line names
         # speaks next — turns, not parallelism, and no fixed beats. The round
@@ -97,19 +101,24 @@ class Realm:
         for _ in range(_MAX_COUNCIL_TURNS):
             addressee = resolve_addressee(speaker, spoken)
             if speaker == "general" and addressee == "master":
-                h.post("general", "master", self._flag_taint(spoken, before))
+                h.post("general", "master", self._flag_close(spoken, before, before_g))
                 return
             h.post(speaker, addressee, spoken)
             speaker, prev = addressee, speaker
             spoken = line(self.backend, self.space, speaker, f"council_from_{prev}",
                           heard=spoken, hall_tail=self._view(),
-                          taint_sink=self._tainted)
+                          taint_sink=self._tainted, grimoire_sink=self._grimoire_touched)
 
         # The leash: the council talked past the cap — the General closes honestly
         # with where things stand rather than let the day wander.
         verdict = line(self.backend, self.space, "general", "general_to_master",
                        heard=text, hall_tail=self._view())
-        h.post("general", "master", self._flag_taint(verdict, before))
+        h.post("general", "master", self._flag_close(verdict, before, before_g))
+
+    def _flag_close(self, verdict: str, before: int, before_g: int) -> str:
+        """Both warnings a close may carry: outside data (taint) and beliefs the
+        realm has not yet proven (unchecked grimoire claims)."""
+        return self._flag_taint(self._flag_unchecked(verdict, before_g), before)
 
     def _flag_taint(self, verdict: str, before: int) -> str:
         """Flag a close that rests on outside data (the Eighth Evangelism: act on
@@ -120,6 +129,28 @@ class Realm:
         return (f"⚠ this rests on data the Warrior pulled from outside the dome "
                 f"({', '.join(sorted(set(touched)))}) — tainted; your leave before "
                 f"we act on it. " + verdict)
+
+    def _flag_unchecked(self, verdict: str, before: int) -> str:
+        """Flag a close resting on claims the council wrote today that still stand
+        untested — the grimoire's twin of the taint rail: the realm names what it
+        is leaning on but has not proven, so the Master can send it to be tested."""
+        touched = self._grimoire_touched[before:]
+        if not touched:
+            return verdict
+        claims = grimoire.load(self.space).get("subjects", {})
+        ids, seen = [], set()
+        for subject, cid in touched:
+            if (subject, cid) in seen:
+                continue
+            seen.add((subject, cid))
+            claim = claims.get(subject, {}).get("claims", {}).get(cid)
+            if claim and claim.get("status") == "unchecked":
+                ids.append(cid)
+        if not ids:
+            return verdict
+        return (f"⚠ parts of this rest on unchecked claims in the grimoire "
+                f"({', '.join(ids)}) — say the word and the Warrior will test them. "
+                + verdict)
 
     def authorize(self, domain: str) -> None:
         self.space.authorize(domain)

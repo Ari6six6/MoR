@@ -7,6 +7,8 @@ could never take.
 
 from __future__ import annotations
 
+from mor import grimoire
+from mor.agents import _council_task
 from mor.engine import ScriptBackend
 from mor.realm import Realm
 from mor.scheduler import named, resolve_addressee
@@ -100,6 +102,81 @@ def test_a_wandering_council_is_closed_by_the_general(space, monkeypatch):
     last = entries[-1]
     assert last["speaker"] == "general" and last["addressee"] == "master"
     assert len(entries) <= 13  # the Master's word + the cap + the forced close
+
+
+# --- the General's audit: the grimoire gets teeth --------------------------
+def test_general_is_pointed_at_the_load_bearing_claim(space):
+    """When the book holds an unchecked claim the realm leans on, the General's
+    council task names it — the audit charter, finally with ammunition."""
+    c1 = grimoire.record_claim(space, "mor", "the root belief", "inferred")
+    grimoire.record_claim(space, "mor", "leans on it", "observed", depends_on=[c1])
+    task = _council_task(space, "general", "wizard", "weigh this")
+    assert "the root belief" in task and c1 in task
+    # the Wizard and Warrior get the discipline, but not the audit pointer
+    assert "the root belief" not in _council_task(space, "wizard", "general", "ok")
+    assert "the root belief" not in _council_task(space, "warrior", "general", "go")
+
+
+def test_general_pointer_is_silent_when_all_claims_are_held(space):
+    c1 = grimoire.record_claim(space, "mor", "settled", "observed")
+    grimoire.mark_claim(space, "mor", c1, "held")
+    assert "load-bearing unchecked" not in _council_task(space, "general", "wizard", "x")
+
+
+def test_unchecked_claims_flag_the_close(space, monkeypatch):
+    """The grimoire's twin of the taint rail: a close resting on claims the council
+    wrote today but never tested names them, so the Master can send them to test."""
+    r = _realm(space, monkeypatch)
+    r.light()
+    cid = grimoire.record_claim(space, "mor", "an untested belief", "inferred")
+
+    class Claiming(ScriptBackend):
+        def __init__(self, realm, script):
+            super().__init__(script)
+            self.realm, self._did = realm, False
+
+        def chat(self, messages, tools=None):
+            res = super().chat(messages, tools)
+            if res.content and res.content.startswith("Recorded") and not self._did:
+                self.realm._grimoire_touched.append(("mor", cid))
+                self._did = True
+            return res
+
+    r.backend = Claiming(r, [
+        {"text": "Recorded a belief. General, weigh it with me."},
+        {"text": "Master — here is where we stand. Your word?"},
+    ])
+    r.master_says("Look into it.")
+    close = r.hall.entries()[-1]
+    assert close["addressee"] == "master"
+    assert "unchecked claims" in close["text"] and cid in close["text"]
+
+
+def test_held_claims_do_not_flag_the_close(space, monkeypatch):
+    """Only what stands untested flags the close — a tested claim rides clean."""
+    r = _realm(space, monkeypatch)
+    r.light()
+    cid = grimoire.record_claim(space, "mor", "a tested belief", "observed")
+    grimoire.mark_claim(space, "mor", cid, "held")
+
+    class Claiming(ScriptBackend):
+        def __init__(self, realm, script):
+            super().__init__(script)
+            self.realm, self._did = realm, False
+
+        def chat(self, messages, tools=None):
+            res = super().chat(messages, tools)
+            if res.content and res.content.startswith("Recorded") and not self._did:
+                self.realm._grimoire_touched.append(("mor", cid))
+                self._did = True
+            return res
+
+    r.backend = Claiming(r, [
+        {"text": "Recorded nothing new. General, we stand ready."},
+        {"text": "Master — here is where we stand. Your word?"},
+    ])
+    r.master_says("Look into it.")
+    assert "unchecked claims" not in r.hall.entries()[-1]["text"]
 
 
 def test_taint_flag_rides_the_close(space, monkeypatch):
