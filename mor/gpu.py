@@ -224,7 +224,13 @@ def launch(cargs: list, spec: ModelSpec, tp, max_len, util, port: int, log) -> N
         _install_vllm(cargs, log)
         cmd = _vllm_cmd(spec, tp, max_len, util, port)
     log(ui.dim(f"  launching: {cmd[:120]}…"))
-    rc, _, err = run(cargs, "HF_HUB_ENABLE_HF_TRANSFER=1 nohup " + cmd +
+    # The build's CUDA env (`_CUDA_ENV`) lives only in that ssh session — this is a
+    # separate one. llama-server is dynamically linked against the toolkit's real
+    # libcublas/libcudart; if the box's ldconfig doesn't know those paths, the
+    # process dies on exec, silently, before it ever opens a socket or a download —
+    # which looks exactly like a hung download bar. Export the same paths here too.
+    env_setup = _CUDA_ENV if spec.server == "llama_cpp" else ""
+    rc, _, err = run(cargs, env_setup + "HF_HUB_ENABLE_HF_TRANSFER=1 nohup " + cmd +
                      " > ~/vllm.log 2>&1 & echo $! > ~/vllm.pid", timeout=60)
     if rc != 0:
         raise ProvisionError(f"launch failed: {err.strip()[-400:]}")
@@ -265,7 +271,14 @@ def endpoint_up(local_port: int) -> bool:
 
 def wait_ready(cargs: list, local_port: int, spec: ModelSpec, log,
                deadline_s: int = 2400) -> bool:
-    """Poll until the endpoint answers, showing a download bar while weights land."""
+    """Poll until the endpoint answers, showing a download bar while weights land.
+
+    A crash on exec (e.g. the runtime linker can't find a shared lib) kills the
+    process in under a second but looks, from here, identical to a slow
+    download — the bar just sits at 0%. Rather than silently waiting out the
+    full deadline (burning rental time on a dead box), check the process is
+    still alive once warm-up has had a moment, and bail out with the crash
+    reason the instant it isn't."""
     import sys
     total = _weights_total(spec)
     start = time.time()
@@ -278,6 +291,15 @@ def wait_ready(cargs: list, local_port: int, spec: ModelSpec, log,
                 sys.stdout.write("\r" + " " * 72 + "\r")
                 sys.stdout.flush()
             return True
+        if time.time() - start > 8 and not server_running(cargs):
+            if tty:
+                sys.stdout.write("\r" + " " * 72 + "\r")
+                sys.stdout.flush()
+            rc, out, _ = run(cargs, "tail -n 15 ~/vllm.log 2>/dev/null", timeout=20)
+            log(ui.red("  ✗ the server process died before it came up."))
+            for ln in (out.strip().splitlines() if rc == 0 and out.strip() else []):
+                log(ui.dim("  | " + ln[:200]))
+            return False
         cur = _cache_bytes(cargs)
         if cur is not None and baseline is None:
             baseline = cur
