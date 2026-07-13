@@ -101,6 +101,18 @@ _NET_WAIT = (
     "could not connect to|connection timed out' /tmp/.mor_net || "
     "{ cat /tmp/.mor_net >&2; return 1; }; sleep 5; done; cat /tmp/.mor_net >&2; return 1; }; "
 )
+# `ssh host "command"` runs non-interactively, so .bashrc's CUDA exports (PATH,
+# LD_LIBRARY_PATH — where the box's real, versioned libcublas/libcudart live)
+# never apply: cmake still finds nvcc, but the linker falls back to broken stubs
+# and dies with "undefined reference to ...@libcublas.so.NN". Find the real
+# toolkit dirs ourselves and export them before the build, whatever the shell
+# init did or didn't do.
+_CUDA_ENV = (
+    "for _d in /usr/local/cuda*/lib64 /usr/local/cuda*/targets/*/lib; do "
+    "[ -d \"$_d\" ] && export LD_LIBRARY_PATH=\"$_d:$LD_LIBRARY_PATH\" "
+    "LIBRARY_PATH=\"$_d:$LIBRARY_PATH\"; done; "
+    "for _b in /usr/local/cuda*/bin; do [ -d \"$_b\" ] && export PATH=\"$_b:$PATH\"; done; "
+)
 
 
 def detect_gpus(cargs: list):
@@ -183,7 +195,7 @@ def _install_llama(cargs: list, log) -> None:
            f"rm -rf {LLAMA_DIR}/src && "
            f"net_wait git clone --depth 1 {LLAMA_REPO} {LLAMA_DIR}/src && "
            "CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader "
-           "2>/dev/null | head -1 | tr -d '. '); "
+           "2>/dev/null | head -1 | tr -d '. '); " + _CUDA_ENV +
            f"cmake -S {LLAMA_DIR}/src -B {LLAMA_DIR}/src/build -DGGML_CUDA=ON "
            "-DLLAMA_CURL=ON -DCMAKE_BUILD_TYPE=Release "
            "${CUDA_ARCH:+-DCMAKE_CUDA_ARCHITECTURES=$CUDA_ARCH} && "
