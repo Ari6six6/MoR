@@ -223,6 +223,19 @@ def _register_cuda_libs(cargs: list) -> None:
                "2>/dev/null > /etc/ld.so.conf.d/cuda-mor.conf && ldconfig", timeout=30)
 
 
+def _clear_stale_and_check_port(cargs: list, port: int) -> str:
+    """Clear orphaned llama-servers and report if `port` is still held by something
+    else. We only get here with no tracked-alive server (server_running returned
+    False), so a leftover llama-server is a lost orphan from an earlier session
+    holding the port — kill it. If the port is *still* taken afterwards, it's
+    another service on the box (vast.ai often squats on 8080): return what holds
+    it so the caller can fail with a clear 'use a different port' message rather
+    than a silent, forever-failing bind. Returns '' when the port is free."""
+    run(cargs, "pkill -9 -f llama-server 2>/dev/null; sleep 1", timeout=20)
+    rc, out, _ = run(cargs, f"ss -tln 2>/dev/null | grep ':{port} ' || true", timeout=20)
+    return out.strip()
+
+
 def launch(cargs: list, spec: ModelSpec, tp, max_len, util, port: int, log) -> None:
     if server_running(cargs):
         log(ui.yellow("  a model server is already running on the box "
@@ -231,6 +244,14 @@ def launch(cargs: list, spec: ModelSpec, tp, max_len, util, port: int, log) -> N
     if spec.server == "llama_cpp":
         _install_llama(cargs, log)
         _register_cuda_libs(cargs)  # so llama-server finds libcudart/libcublas on exec
+        held = _clear_stale_and_check_port(cargs, port)
+        if held:
+            alt = port + 10000 if port < 55535 else 8000
+            raise ProvisionError(
+                f"port {port} on the box is already held by another service — the "
+                f"server can never bind it. Re-run with a different remote port in "
+                f"your -L forward, e.g. -L {port}:localhost:{alt}  (your local "
+                f"{port} still works; only the box-side port moves).")
         cmd = _llama_cmd(spec, max_len, port)
     else:
         _install_vllm(cargs, log)

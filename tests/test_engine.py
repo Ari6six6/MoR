@@ -289,3 +289,28 @@ def test_blocked_ip_helper_passes_public(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo",
                         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))])
     assert _blocked_ip("example.com") == ""
+
+
+# --- gpu launch: stale-server cleanup and port-conflict guard ---------------
+def test_clear_stale_reports_when_port_still_held(monkeypatch):
+    """After killing orphan llama-servers, if something still holds the port we
+    surface it (so launch can fail clearly instead of binding forever)."""
+    from mor import gpu
+    calls = []
+
+    def fake_run(cargs, command, timeout=120):
+        calls.append(command)
+        if "ss -tln" in command:
+            return 0, "LISTEN 0 128 127.0.0.1:8080 0.0.0.0:*", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(gpu, "run", fake_run)
+    held = gpu._clear_stale_and_check_port(["host"], 8080)
+    assert "8080" in held
+    assert any("pkill" in c for c in calls)  # orphans were cleared first
+
+
+def test_clear_stale_returns_empty_when_port_free(monkeypatch):
+    from mor import gpu
+    monkeypatch.setattr(gpu, "run", lambda *a, **k: (0, "", ""))
+    assert gpu._clear_stale_and_check_port(["host"], 8080) == ""
