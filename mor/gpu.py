@@ -212,6 +212,17 @@ def server_running(cargs: list) -> bool:
     return "RUNNING" in out
 
 
+def _register_cuda_libs(cargs: list) -> None:
+    """Teach the box's dynamic linker where the CUDA toolkit lives, once and for
+    all. Exporting LD_LIBRARY_PATH only helps the one shell that launches — but a
+    crash-on-exec ("libcudart.so.NN: cannot open shared object file") strikes any
+    session that forgets to. Writing the toolkit dirs into ld.so.conf and running
+    ldconfig fixes it system-wide, so the server starts no matter who launches it.
+    Idempotent and cheap; best-effort (needs root, which a rented box gives)."""
+    run(cargs, "ls -d /usr/local/cuda*/lib64 /usr/local/cuda*/targets/*/lib "
+               "2>/dev/null > /etc/ld.so.conf.d/cuda-mor.conf && ldconfig", timeout=30)
+
+
 def launch(cargs: list, spec: ModelSpec, tp, max_len, util, port: int, log) -> None:
     if server_running(cargs):
         log(ui.yellow("  a model server is already running on the box "
@@ -219,16 +230,17 @@ def launch(cargs: list, spec: ModelSpec, tp, max_len, util, port: int, log) -> N
         return
     if spec.server == "llama_cpp":
         _install_llama(cargs, log)
+        _register_cuda_libs(cargs)  # so llama-server finds libcudart/libcublas on exec
         cmd = _llama_cmd(spec, max_len, port)
     else:
         _install_vllm(cargs, log)
         cmd = _vllm_cmd(spec, tp, max_len, util, port)
     log(ui.dim(f"  launching: {cmd[:120]}…"))
-    # The build's CUDA env (`_CUDA_ENV`) lives only in that ssh session — this is a
-    # separate one. llama-server is dynamically linked against the toolkit's real
-    # libcublas/libcudart; if the box's ldconfig doesn't know those paths, the
-    # process dies on exec, silently, before it ever opens a socket or a download —
-    # which looks exactly like a hung download bar. Export the same paths here too.
+    # Belt-and-suspenders with the ldconfig registration above: the build's CUDA
+    # env (`_CUDA_ENV`) lived only in that ssh session — this is a separate one.
+    # llama-server is dynamically linked against the toolkit's libcublas/libcudart;
+    # if the linker can't find them it dies on exec, silently, before it opens a
+    # socket or a download — which looks exactly like a hung download bar.
     env_setup = _CUDA_ENV if spec.server == "llama_cpp" else ""
     rc, _, err = run(cargs, env_setup + "HF_HUB_ENABLE_HF_TRANSFER=1 nohup " + cmd +
                      " > ~/vllm.log 2>&1 & echo $! > ~/vllm.pid", timeout=60)
