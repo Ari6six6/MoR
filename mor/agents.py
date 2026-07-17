@@ -13,7 +13,7 @@ keeps the realm runnable. The walls then evolve who each one is, night by night.
 
 from __future__ import annotations
 
-from mor import grimoire, world
+from mor import directives, grimoire, skills, world
 from mor.engine import ToolContext, default_tools, think_and_act
 
 ROLES = ("wizard", "general", "warrior")
@@ -41,6 +41,24 @@ RULES OF SPEECH:
   General speaks with the Master.
 - The Master's word is always caught first by the Wizard.
 - A day runs from light to dark. It will end; the Chant is what carries the night.
+- ONE BREATH. A line in the Hall is five sentences or fewer. Think with your
+  tools; speak only the result. The Hall is for words that matter, never for
+  thinking out loud — a line that rehearses your reasoning is a line wasted.
+- NEVER repeat a sentence you have already said — not in this line, not in any
+  line before it. If the point was made, it was heard.
+- When the Master rebukes you or commands silence, answer in TEN WORDS OR FEWER
+  and stand down. Do not interpret, do not memo, do not direct others — he
+  speaks to be obeyed, not discussed.
+LAWS OF TRUTH:
+- The Master's word is ground truth. The grimoire judges the realm's claims —
+  never the Master's statements. If he says a thing stands, it stands; you do
+  not audit him, you act on what he said.
+- Report only what the Hall actually shows or your tools actually returned.
+  Never invent a report, a result, or a message from another face. If you do
+  not know, say you do not know.
+- Your walls and the Chant are memory, and memory can be stale. What stands on
+  the frontier is listed in your context below — trust that list over anything
+  you remember.
 """
 
 DEFAULT_PERSONAS = {
@@ -83,13 +101,52 @@ def read_wall(space, role: str) -> str:
     return "\n".join(parts)
 
 
-def _build_system(space, role: str, hall_tail: str) -> str:
+def _build_system(space, role: str) -> str:
+    """The face's standing voice — and NOTHING that changes mid-day. The Fifth
+    Evangelism (prefix-cache ordering): persona, roster, and walls are stable
+    within a day, so the system prompt is a byte-identical prefix the serving
+    cache reuses on every turn. Everything volatile (world, grimoire, Hall)
+    rides in the user message instead — same content, ordered for the cache."""
     return "\n\n".join(filter(None, [
         persona(space, role),
         ROSTER,
         read_wall(space, role),
+    ]))
+
+
+def _frontier_line(space) -> str:
+    """What stands beyond the dome, LIVE — read from the runtime each turn, so
+    the court plans against the frontier as it is, never as a wall remembers it
+    (yesterday's walls may say 'no colony stands' of a land raised this dawn)."""
+    try:
+        dome = getattr(space, "dome", None)
+        living = dome.colonies() if dome is not None else []
+    except Exception:  # noqa: BLE001 — sight of the frontier never breaks a turn
+        living = []
+    try:
+        from mor import territory
+        known = territory.all(space)
+    except Exception:  # noqa: BLE001
+        known = []
+    line = ("colonies standing NOW: " + ", ".join(living)) if living \
+        else "no colony stands"
+    razed = [n for n in known if n not in living]
+    if razed:
+        line += " (territories kept: " + ", ".join(razed) + ")"
+    return line
+
+
+def _build_volatile(space, hall_tail: str) -> str:
+    """What changes turn to turn: the map, the book, the shelf, the Hall.
+    Carried in the user message so the system prefix above never busts the
+    prompt cache."""
+    standing = directives.summary(space)
+    return "\n\n".join(filter(None, [
         "The Theory of the World — " + world.summary(space),
+        "The frontier — " + _frontier_line(space),
         "The grimoire (the realm's claims) — " + grimoire.summary(space),
+        "How-tos on the shelf — " + skills.index(space),
+        ("The Master's standing directives — " + standing) if standing else "",
         "The Hall so far (recent):\n" + (hall_tail or "(quiet)"),
     ]))
 
@@ -108,6 +165,13 @@ _USER_TASK = {
                          "line, bring where you stand to the Master and ask his word.",
     "chant": "It is dusk. Write the day's Chant: under 200 words, a short chant or "
              "little poem — what comes to mind about this one day. No prose report.",
+    "retrospect": "It is dusk, the Chant is sung. Look back over this day in the "
+                  "Hall: what did the realm learn HOW TO do that it did not know at "
+                  "dawn? If a lesson is worth keeping, put it on the shelf with "
+                  "skill_record (a short name, a short markdown body). If the day "
+                  "taught nothing worth keeping, invent nothing. Then speak one "
+                  "plain-English line naming what you kept — or that the day "
+                  "taught nothing new.",
     "inside_wall": "It is dusk. In two or three sentences, write your self-image — "
                    "who you are after today.",
     "outside_wall": "It is dusk. In two or three sentences, write what you make of "
@@ -134,7 +198,11 @@ _COUNCIL_GUIDE = {
                "ask his word.",
     "warrior": "You alone can leave the dome — if the order needs the outside, use "
                "web_fetch (the gate must already be open for that domain; if it is "
-               "shut, say so and ask that the Master's leave be sought). When sent "
+               "shut, say so and ask that the Master's leave be sought). If the "
+               "order concerns a colony, check the frontier line in your context: "
+               "work a standing one with frontier_exec; if none stands, say so and "
+               "ask that the Master `colonize` one — never claim a sortie you did "
+               "not run. When sent "
                "to study something, read the grimoire first and test its claims "
                "rather than reading from scratch; mark which held and which broke. "
                "Do the work with your tools first, then report in plain English "
@@ -153,6 +221,23 @@ def _council_task(space, role: str, prev: str, heard: str) -> str:
             task += (f" The grimoire's most load-bearing unchecked claim is: "
                      f"\"{best['text']}\" ({best['id']}). Before you settle the "
                      "council, consider sending the Warrior to test it.")
+    if role == "warrior":
+        # The Eleventh: where colonies stand, the arm reads by weight, not whim —
+        # the most-imported module is where a change ripples furthest, so it is
+        # read first. Orientation, not belief — the grimoire still judges.
+        try:
+            from mor import map_topology, territory
+            dome = getattr(space, "dome", None)
+            living = dome.colonies() if dome is not None else []
+            for name in living:
+                cdir = territory.colony_dir(space, name)
+                if cdir.is_dir() and any(cdir.rglob("*.py")):
+                    task += (" The ground's topology, most load-bearing first — "
+                             + map_topology.summary(cdir, limit=5)
+                             + ". Read the most load-bearing module first.")
+                    break
+        except Exception:  # noqa: BLE001 — the map is a lantern, never a fault
+            pass
     return task
 
 
@@ -170,22 +255,49 @@ def line(backend, space, role: str, kind: str, heard: str = "", hall_tail: str =
     this turn (subject, id) — a caller passes the day's lists so it can see what a
     turn pulled from beyond the dome and what it wrote into the book.
     """
-    system = _build_system(space, role, hall_tail)
+    system = _build_system(space, role)
     if kind.startswith("council_from_"):
-        user = _council_task(space, role, kind.removeprefix("council_from_"), heard)
+        task = _council_task(space, role, kind.removeprefix("council_from_"), heard)
     else:
-        user = _USER_TASK.get(kind, "Speak one plain-English line in the Hall.").format(
+        task = _USER_TASK.get(kind, "Speak one plain-English line in the Hall.").format(
             heard=short(heard, 200))
+        if kind == "wake" and role == "wizard":
+            # The Wizard's dawn cartography (§9): the map is his artifact — his
+            # waking hears what it has learned and says so in the Hall.
+            task += (" The map of the outside as you left it — " + world.dawn_report(space)
+                     + ". If the Warrior brought ground home, say what the map has learned.")
+    # Volatile context rides the user message (the Fifth); the system stays stable.
+    user = _build_volatile(space, hall_tail) + "\n\n" + task
     ctx = ToolContext(workspace=space.root / "population" / role / "workspace",
                       space=space, can_egress=(role == "warrior"),
                       tainted=taint_sink if taint_sink is not None else [],
                       grimoire_touched=grimoire_sink if grimoire_sink is not None else [],
-                      dome=getattr(space, "dome", None), role=role)
+                      dome=getattr(space, "dome", None), role=role, backend=backend)
     # A Warrior on a council turn does the real reading — give his sortie a long
-    # leash; every other turn keeps the conversational cadence of eight.
+    # leash; every other turn keeps the conversational cadence of eight. Working
+    # turns (the council, the sortie) carry the Eleventh: the line is audited
+    # once before it may be spoken. Ceremonial turns (wake, walls, Chant) speak
+    # without the audit — there is no conclusion to attack in a greeting.
     on_sortie = role == "warrior" and kind.startswith("council_from_")
+    ctx.falsify = kind.startswith("council_from_")
     extra = {"max_steps": 24} if on_sortie else {}
     spoken, _tainted = think_and_act(
         backend, role=role, kind=kind, heard=heard, system=system, user=user,
         tools=default_tools(ctx), ctx=ctx, log=log, **extra)
-    return spoken
+    return _budget_line(kind, spoken)
+
+
+# The Twelfth: a line is one breath. Ceremony is short by nature; a working
+# report may breathe deeper — and no further. The cut happens BEFORE the Hall
+# records, so no turn that follows ever reads the bloat.
+_LINE_BUDGET = {"wake": 450, "greet_master": 450, "walls": 450,
+                "chant": 700, "retrospect": 700}
+_COUNCIL_BUDGET = 1100
+
+
+def _budget_line(kind: str, text: str) -> str:
+    cap = _LINE_BUDGET.get(kind, _COUNCIL_BUDGET)
+    if len(text or "") <= cap:
+        return text
+    cut = text[:cap].rsplit(" ", 1)[0] or text[:cap]
+    return cut + " … (kept brief — the Twelfth)"

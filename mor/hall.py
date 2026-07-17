@@ -17,11 +17,24 @@ from mor import ui
 
 _FENCE = re.compile(r"```.*?```", re.DOTALL)
 
+# One line can never swamp the day. The Hall's tail rides every prompt a face
+# sees, so a single wild line (a model loop, a pasted log) would otherwise
+# poison every turn that follows it. A long line is cut; the full text was the
+# model's, and the record notes the cut.
+_MAX_LINE = 1500
+
 
 def _plainen(text: str) -> str:
     """Strip fenced code — the Hall carries prose and references, never code."""
     cleaned = _FENCE.sub("[reference to code — see the file]", text or "")
     return " ".join(cleaned.split()).strip()
+
+
+def _cap(text: str) -> str:
+    if len(text) <= _MAX_LINE:
+        return text
+    cut = text[:_MAX_LINE].rsplit(" ", 1)[0] or text[:_MAX_LINE]
+    return cut + " … (the line ran long — the Hall cut it)"
 
 
 class Hall:
@@ -39,7 +52,7 @@ class Hall:
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "speaker": speaker,
             "addressee": addressee,
-            "text": _plainen(text),
+            "text": _cap(_plainen(text)),
         }
         with self.path.open("a") as f:
             f.write(json.dumps(entry) + "\n")

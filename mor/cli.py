@@ -17,9 +17,10 @@ import sys
 import threading
 import time
 
-from mor import ui
+from mor import checkpoint, directives, ui
 from mor.config import (Space, current_space_name, gpu_state_path, load_json,
-                        load_space, save_json, spaces_root, use_space)
+                        load_space, save_json, spaces_root, use_space,
+                        valid_space_name)
 from mor.realm import Realm
 
 BANNER = f"""{ui.bold(ui.magenta('  MoR — Masters of the Realm'))}
@@ -36,6 +37,15 @@ HELP = f"""{ui.bold('Commands')}
   {ui.cyan('gpu')} ...         ssh <ssh…> (detect+serve+tunnel) · model [key] · test · status · down
   {ui.cyan('persona')} <role>  write who a face is — wizard · general · warrior (seed → yours)
   {ui.cyan('space')} ...       (show) · use <name> · new <name> · list
+  {ui.cyan('checkpoint')}      list snapshots · take [label] · restore <id> (realm asleep)
+  {ui.cyan('direct')} <rule>   set a standing directive (holds every turn) · (list) · drop <n>
+  {ui.cyan('colonize')} <name> raise a colony on the frontier · {ui.cyan('raze')} <name> pulls it down
+  {ui.cyan('colonies')}        survey the frontier · {ui.cyan('territory')} <name> reads its record
+  {ui.cyan('ask')} <query>     the Ontology answers — passages plus the facts that bind them
+  {ui.cyan('relate')} s p o    assert a fact into the graph by hand (subject predicate object)
+  {ui.cyan('improve')} [brief] one night in the Forge — the Smith mutates, the suite judges (asleep only)
+  {ui.cyan('forge')}           list the tools the realm has forged for itself
+  {ui.cyan('juice')}           the score: tests green · tools forged · improvements kept · graph mass
   {ui.cyan('help')} / {ui.cyan('?')}       this
   {ui.cyan('quit')} / {ui.cyan('q')}       leave (ends the day first if one is lit)
 """
@@ -102,16 +112,6 @@ def _spinner(stop: "threading.Event", label: str) -> None:
     _clear_line()
 
 
-def _local_port(args) -> str:
-    """The local port of a `-L localport:host:remoteport` forward."""
-    for i, a in enumerate(args):
-        if a == "-L" and i + 1 < len(args):
-            return args[i + 1].split(":")[0]
-        if a.startswith("-L") and len(a) > 2:
-            return a[2:].split(":")[0]
-    return ""
-
-
 def _gpu(rest: str) -> None:
     """One command to reach your model: `gpu ssh <full ssh… with -L forward>`.
 
@@ -152,12 +152,18 @@ def _gpu(rest: str) -> None:
         print(ui.green(f"  {len(gpus)}× GPU · {total_gb}GB VRAM") + ui.dim(
             f"  ({', '.join(n for n, _ in gpus)})"))
         print(ui.dim(f"  serving {spec.label}") + ui.dim(f" · context {max_len} · port {rport}"))
-        # 3. install the runtime + launch the server on the box
+        # 3. install the runtime + launch the server on the box. If the box-side
+        # port is squatted on (vast.ai loves 8080), the launch slides to a free
+        # one on its own — and the tunnel forward follows it below.
         try:
-            gpumod.launch(cargs, spec, tp, max_len, util, rport, print)
+            new_rport = gpumod.launch(cargs, spec, tp, max_len, util, rport,
+                                      print, auto_port=True)
         except gpumod.ProvisionError as e:
             print(ui.red("  " + str(e)))
             return
+        if new_rport != rport:
+            ssh_args = gpumod.replace_forward(ssh_args, new_rport)
+            print(ui.dim(f"  tunnel follows the slide: -L {local_port}:localhost:{new_rport}"))
         # 4. open the tunnel (headless: no stdin fight, no host-key prompt)
         _kill_tunnel()
         cmd = ["ssh", "-N",
@@ -271,6 +277,10 @@ def _space(rest: str) -> None:
         if len(parts) < 2:
             print(ui.yellow(f"usage: space {sub} <name>"))
             return
+        if not valid_space_name(parts[1]):
+            print(ui.yellow("  a space name is letters, digits, . _ - (start with "
+                            "a letter or digit) — it names directories and containers."))
+            return
         use_space(parts[1])
         Space(parts[1]).ensure()
         print(ui.green(f"  space → {parts[1]}"))
@@ -353,49 +363,310 @@ def run_demo() -> None:
     realm.dark()
 
 
+def _checkpoint(realm, rest: str) -> None:
+    """The Sixth at the command line: list, take, or rewind snapshots of the space."""
+    parts = rest.split()
+    sub = parts[0].lower() if parts else ""
+    if sub == "take":
+        label = "-".join(parts[1:]) or "manual"
+        sid = checkpoint.snapshot(realm.space, label)
+        print(ui.green(f"  snapshot {sid} — the space is set aside")
+              if sid else ui.red("  the snapshot failed"))
+    elif sub == "restore":
+        if realm.awake:
+            print(ui.yellow("  the realm is awake — seal the day (`dark`) before "
+                            "rewinding time."))
+            return
+        if len(parts) < 2:
+            print(ui.yellow("usage: checkpoint restore <id>"))
+            return
+        ok, msg = checkpoint.restore(realm.space, parts[1])
+        print(ui.green(f"  {msg}") if ok else ui.yellow(f"  {msg}"))
+    else:
+        snaps = checkpoint.list_snapshots(realm.space)
+        if not snaps:
+            print(ui.dim("  no snapshots yet — dawn and dusk keep them automatically, "
+                         "or `checkpoint take`"))
+        for s in snaps:
+            print(ui.dim(f"    {s}"))
+
+
+def _direct(realm, rest: str) -> None:
+    """The First at the command line: set, list, or lift standing directives."""
+    parts = rest.split()
+    if not parts:
+        standing = directives.all(realm.space)
+        if not standing:
+            print(ui.dim("  no standing directives — `direct <rule>` sets one "
+                         "(e.g. direct never use curl)"))
+        for i, d in enumerate(standing, 1):
+            print(f"  {ui.cyan(str(i))}. {d['text']}  {ui.dim('(set ' + d.get('set', '?') + ')')}")
+        return
+    if parts[0].lower() in ("drop", "forget", "lift"):
+        if len(parts) < 2 or not parts[1].isdigit():
+            print(ui.yellow("usage: direct drop <number>"))
+            return
+        if directives.drop(realm.space, int(parts[1])):
+            print(ui.green(f"  directive {parts[1]} is lifted."))
+        else:
+            print(ui.yellow(f"  no directive {parts[1]} stands."))
+        return
+    text = " ".join(parts)
+    idx, warning = directives.add(realm.space, text)
+    print(ui.green(f"  directive {idx} now stands: {text}"))
+    if warning:
+        print(ui.yellow(f"  note: {warning}"))
+    if realm.awake and realm.hall:
+        realm.hall.post("master", "general", f"A standing directive now holds: {text}")
+        realm.hall.post("general", "master",
+                        "Understood, Master. It stands for every turn from here.")
+
+
+def _frontier(realm, cmd: str, rest: str) -> None:
+    """The Frontier at the command line: colonize, raze, survey the lands."""
+    from mor import territory
+    from mor.engine.dome import Dome
+    dome = realm.dome or Dome(realm.space)
+    if cmd == "colonize":
+        if not rest:
+            print(ui.yellow("usage: colonize <name>"))
+            return
+        ok, _cname, msg = dome.colonize(rest)
+        print(ui.green(f"  {msg}") if ok else ui.red(f"  {msg}"))
+        if ok:
+            territory.begin(realm.space, rest)
+    elif cmd == "raze":
+        if not rest:
+            print(ui.yellow("usage: raze <name>"))
+            return
+        rec = territory.harvest(realm.space, rest)   # the book closes first...
+        ok, msg = dome.raze(rest)                    # ...then the body falls
+        print(ui.green(f"  {msg}") if ok else ui.red(f"  {msg}"))
+        c = rec.get("counts", {})
+        if c:
+            print(ui.dim(f"  the territory holds {c.get('files', 0)} files, "
+                         f"{c.get('ops', 0)} operations on record."))
+    elif cmd == "colonies":
+        living = dome.colonies()
+        known = territory.all(realm.space)
+        if living:
+            print(ui.green("  standing: " + ", ".join(living)))
+        if known:
+            print(ui.dim("  territories: " + ", ".join(known)))
+        if not living and not known:
+            print(ui.dim("  the frontier is quiet — `colonize <name>` raises a land"))
+    elif cmd == "territory":
+        if not rest:
+            print(ui.yellow("usage: territory <name>"))
+            return
+        print(territory.summary(realm.space, rest))
+
+
+def _ask(realm, rest: str) -> None:
+    """Ask the Ontology from the shell — the same fused answer the faces get."""
+    if not rest:
+        print(ui.yellow("usage: ask <query>"))
+        return
+    from mor import ontology, recall
+    from mor.engine import make_backend
+    backend, how = make_backend()
+    conn = ontology.connect(realm.space)
+    try:
+        docs = recall.load_corpus(realm.space, "all",
+                                  workspace=realm.space.root / "workspace")
+        for ref, text in docs:
+            ontology.ingest_text(conn, "corpus", ref, text, backend=backend)
+        out = ontology.ask(conn, rest, k=5, backend=backend)
+    finally:
+        conn.close()
+    print(ui.dim(f"  (mind: {how} · vectors: {out['how']})"))
+    for i, p in enumerate(out["passages"]):
+        print(f"  {ui.cyan(p['ref'])} {ui.dim('(score ' + str(p['score']) + ')')}")
+        print("   " + p["excerpt"][:240].replace("\n", " "))
+    if out["triples"]:
+        print(ui.dim("  — the graph also knows —"))
+        for t in out["triples"]:
+            print(f"  {t['s']} {ui.magenta('—' + t['p'] + '→')} {t['o']}")
+    if not out["passages"] and not out["triples"]:
+        print(ui.dim("  the graph is silent — nothing ingested answers that yet"))
+
+
+def _relate(realm, rest: str) -> None:
+    parts = rest.split(None, 2)
+    if len(parts) < 3:
+        print(ui.yellow("usage: relate <subject> <predicate> <object>"))
+        return
+    from mor import ontology
+    conn = ontology.connect(realm.space)
+    try:
+        print("  " + ontology.relate(conn, parts[0], parts[1], parts[2],
+                                     day=realm.space.state().get("last_day", 0)))
+    finally:
+        conn.close()
+
+
+def _improve(realm, rest: str) -> None:
+    """One night in the Forge, from the shell. The realm must be asleep — the
+    Smith never works under a lit day."""
+    if realm.awake:
+        print(ui.yellow("  the Smith works at night — `dark` first, then improve"))
+        return
+    from mor import juice
+    from mor.engine import make_backend
+    backend, how = make_backend()
+    print(ui.dim(f"  the Forge opens (mind: {how})…"))
+    stop = threading.Event()
+    spin = threading.Thread(target=_spinner, args=(stop, "the Smith is working"),
+                            daemon=True)
+    spin.start()
+    try:
+        rec = juice.improve_cycle(realm.space, backend, brief=rest,
+                                  log=lambda m: None)
+    finally:
+        stop.set()
+        spin.join(timeout=1)
+        _clear_line()
+    print(ui.bold("  — the Smith's report —"))
+    print("  " + (rec.get("report") or "").replace("\n", "\n  "))
+    if rec.get("verdict"):
+        color = ui.green if rec.get("kept") else ui.yellow
+        print(color("  " + rec["verdict"]))
+    if rec.get("tail") and not rec.get("kept"):
+        print(ui.dim("  suite tail:\n    " + rec["tail"].replace("\n", "\n    ")))
+
+
+def _forge(realm, rest: str) -> None:
+    from mor import forge
+    rows = forge.list_forged(realm.space)
+    if not rows:
+        print(ui.dim("  tools.d stands empty — nothing forged yet"))
+        return
+    for name, status in rows:
+        color = ui.green if status == "forged and standing" else ui.red
+        print(f"  {ui.cyan(name):24} {color(status)}")
+
+
+def _juice(realm, rest: str) -> None:
+    from mor import juice
+    print(ui.dim("  weighing the realm…"))
+    st = juice.juice_score(realm.space)
+    g = st["graph"]
+    print(ui.bold(f"  JUICE {st['score']}"))
+    print(f"  tests: {ui.green(str(st['tests_green']) + ' green')}"
+          + (ui.red(f" · {st['tests_red']} red") if st['tests_red'] else ""))
+    print(f"  forged tools: {st['forged_tools']} · improvements kept: "
+          f"{st['improvements_kept']} of {st['nights_in_forge']} nights")
+    print(f"  graph: {g['entities']} entities · {g['triples']} triples · "
+          f"{g['passages']} passages")
+
+
+def _dispatch(realm, raw: str) -> bool:
+    """One line from the Master. Returns False only when the shell should exit."""
+    cmd = raw.split()[0].lower()
+    rest = raw[len(cmd):].strip()
+    if cmd in ("quit", "exit", "q"):
+        return False
+    elif cmd in ("light", "1"):
+        realm.light()
+    elif cmd in ("dark", "0"):
+        realm.dark()
+    elif cmd in ("help", "?", "h"):
+        print(HELP)
+    elif cmd == "gpu":
+        _gpu(rest)
+    elif cmd == "space":
+        _space(rest)
+    elif cmd in ("persona", "personas"):
+        _persona(rest)
+    elif cmd in ("alchemist", "🜂"):  # a hidden hand — not listed in help
+        _alchemist()
+    elif cmd in ("authorize", "auth"):
+        if rest:
+            realm.authorize(rest.split()[0])
+        else:
+            print(ui.yellow("usage: authorize <domain>"))
+    elif cmd == "checkpoint":
+        _checkpoint(realm, rest)
+    elif cmd == "direct":
+        _direct(realm, rest)
+    elif cmd in ("colonize", "raze", "colonies", "territory"):
+        _frontier(realm, cmd, rest)
+    elif cmd == "ask":
+        _ask(realm, rest)
+    elif cmd == "relate":
+        _relate(realm, rest)
+    elif cmd == "improve":
+        _improve(realm, rest)
+    elif cmd == "forge":
+        _forge(realm, rest)
+    elif cmd == "juice":
+        _juice(realm, rest)
+    elif realm.awake:
+        realm.master_says(raw)
+    else:
+        print(ui.dim("  the realm is asleep — `light` to wake it, `help` for more"))
+    return True
+
+
+def _stdin_reader(q) -> None:
+    """Reads stdin forever, queueing each line for the realm — the mechanism of
+    §4: the Master may speak whenever he likes, even mid-turn, and his word is
+    always the next turn. `None` marks EOF (Ctrl-D / a closed pipe)."""
+    while True:
+        try:
+            line = input()
+        except (EOFError, Exception):  # noqa: BLE001 — a dead stdin ends the shell
+            q.put(None)
+            return
+        q.put(line)
+
+
+def _print_prompt(realm) -> None:
+    prompt = ui.magenta("♔ you> ") if realm.awake else ui.dim("mor> ")
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+
+
 def repl() -> None:
     realm = Realm(load_space())
     print(BANNER)
     print(ui.dim(f"  space: {current_space_name()}    ") + ui.dim("(type `help`)\n"))
-    while True:
-        try:
-            prompt = ui.magenta("♔ you> ") if realm.awake else ui.dim("mor> ")
-            raw = input(prompt).strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not raw:
-            continue
-        cmd = raw.split()[0].lower()
-        rest = raw[len(cmd):].strip()
-        if cmd in ("quit", "exit", "q"):
-            if realm.awake:
+    import queue as _q
+    q = _q.Queue()
+    realm.pending_master = lambda: not q.empty()
+    threading.Thread(target=_stdin_reader, args=(q,), daemon=True).start()
+    try:
+        while True:
+            if q.empty():
+                _print_prompt(realm)
+            try:
+                raw = q.get()
+            except KeyboardInterrupt:
+                print()
+                break
+            if raw is None:  # EOF — stdin closed
+                break
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                if not _dispatch(realm, raw):
+                    break
+            except KeyboardInterrupt:
+                # A Ctrl-C mid-turn (a slow oracle, a long sortie) interrupts the
+                # turn, never the shell — and the day stays lit and sealable.
+                print(ui.yellow("\n  (interrupted — the day is still lit; `dark` seals it)"))
+            except Exception as e:  # noqa: BLE001 — the door must not die with a day lit
+                print(ui.red(f"  error: {type(e).__name__}: {e}"))
+    finally:
+        # However the shell ends — quit, EOF, a crash elsewhere — a lit day is
+        # sealed (walls, Chant, bodies harvested), never left to haunt day N+1.
+        if realm.awake:
+            try:
                 realm.dark()
-            _kill_tunnel()
-            break
-        elif cmd in ("light", "1"):
-            realm.light()
-        elif cmd in ("dark", "0"):
-            realm.dark()
-        elif cmd in ("help", "?", "h"):
-            print(HELP)
-        elif cmd == "gpu":
-            _gpu(rest)
-        elif cmd == "space":
-            _space(rest)
-        elif cmd in ("persona", "personas"):
-            _persona(rest)
-        elif cmd in ("alchemist", "🜂"):  # a hidden hand — not listed in help
-            _alchemist()
-        elif cmd in ("authorize", "auth"):
-            if rest:
-                realm.authorize(rest.split()[0])
-            else:
-                print(ui.yellow("usage: authorize <domain>"))
-        elif realm.awake:
-            realm.master_says(raw)
-        else:
-            print(ui.dim("  the realm is asleep — `light` to wake it, `help` for more"))
+            except Exception:  # noqa: BLE001 — sealing is best-effort on the way out
+                pass
+        _kill_tunnel()
     print(ui.dim("  — you step off the dome —"))
 
 
@@ -406,6 +677,15 @@ def main(argv=None) -> int:
         return 0
     if argv and argv[0] in ("-h", "--help"):
         print(BANNER + "\n" + HELP)
+        return 0
+    # Headless doors — cron-able, so the Forge can work while the Master sleeps:
+    #   opus improve "sharpen the recall tool"   (one night, then exits)
+    #   opus juice                               (the score, then exits)
+    #   opus ask "what does the realm know of vast.ai?"
+    if argv and argv[0] in ("improve", "juice", "ask"):
+        realm = Realm(load_space())
+        rest = " ".join(argv[1:])
+        {"improve": _improve, "juice": _juice, "ask": _ask}[argv[0]](realm, rest)
         return 0
     repl()
     return 0

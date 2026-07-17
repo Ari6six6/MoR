@@ -2,10 +2,12 @@
 
 Each face gets a real container body on a local Docker network (the dome). The
 dome is `--internal` (kernel air-gap: siblings reach each other by name, nothing
-reaches the internet), and only the Warrior's body is also wired to an egress
-network — so at the kernel level, only the Warrior's hands can touch the outside.
-DNA (lineage + relations) is written to disk and mounted read-only: superposition
-a face's own code can read. Bodies die at dusk; the harvest keeps the record.
+reaches the internet), and EVERY body — the Warrior's included — lives on it and
+nowhere else, so no shell in any body can touch the outside at all. The realm's
+only egress is the `web_fetch` tool (Warrior-only, gated, SSRF-guarded), which
+runs in the opus process, not in a body. DNA (lineage + relations) is written to
+disk and mounted read-only: superposition a face's own code can read. Bodies die
+at dusk; the harvest keeps the record.
 
 Everything degrades gracefully: no container runtime → `embodied` is False and the
 realm runs disembodied (faces use a local workspace, no shell-in-body), exactly as
@@ -18,6 +20,7 @@ import json
 import shlex
 import subprocess
 import time
+from pathlib import Path
 
 IMAGE = "python:3.12-slim"
 
@@ -93,15 +96,23 @@ class Dome:
         _sh(f"{rt} network create --internal {shlex.quote(net)} 2>/dev/null || true")
         for role in roles:
             name = self.body_name(role)
-            self.bodies[role] = name
-            if _sh(f"{rt} ps -a --filter name=^{shlex.quote(name)}$ "
+            if _sh(f"{rt} ps --filter name=^{shlex.quote(name)}$ "
                    f"--format '{{{{.Names}}}}'")[1].strip() == name:
-                continue  # already up
+                self.bodies[role] = name
+                continue  # already up (ps lists the living, not every husk)
+            # A stopped namesake is a husk from a day that never saw dusk —
+            # clear it so the fresh body can take the name.
+            _sh(f"{rt} rm -f {shlex.quote(name)} 2>/dev/null || true")
             ws = self.space.root / "population" / role / "workspace"
             ws.mkdir(parents=True, exist_ok=True)
             dna = self._write_dna(role, roles)
             cmd = (f"{rt} run -d --name {shlex.quote(name)} "
                    f"--network {shlex.quote(net)} "
+                   # A body is a leash, not a free hand: no capabilities, no
+                   # privilege escalation, bounded memory/CPU/PIDs — so a shell
+                   # driven sideways in a body can't starve the host it serves.
+                   f"--cap-drop ALL --security-opt no-new-privileges "
+                   f"--memory 512m --cpus 1 --pids-limit 256 "
                    f"--label mor.role={shlex.quote(role)} "
                    f"--label mor.space={shlex.quote(self.space.name)} "
                    f"-v {shlex.quote(str(ws))}:/work -w /work "
@@ -109,6 +120,9 @@ class Dome:
                    f"{shlex.quote(IMAGE)} sleep infinity")
             rc, _, err = _sh(cmd, timeout=600)
             if rc != 0:
+                # Never record a body that didn't rise — `bodies` must hold only
+                # containers that truly exist, or the realm believes itself
+                # embodied while `exec` speaks to phantoms.
                 self.log(f"  body for {role} failed to rise: {err.strip()[-120:]}")
                 continue
             # EVERY body stays on the internal dome — no container gets a route out,
@@ -116,6 +130,7 @@ class Dome:
             # and cannot reach the internet. The realm's ONLY egress is the web_fetch
             # tool (Warrior only, gated per-domain, SSRF-guarded, tainted). One gate,
             # one chokepoint — the run_shell back door is closed by construction.
+            self.bodies[role] = name
             self.log(f"  {role}'s body rose on the dome as {name}")
         self.embodied = bool(self.bodies)
         return self.embodied
@@ -127,6 +142,95 @@ class Dome:
         rt = self.runtime
         return _sh(f"{rt} exec -w /work {shlex.quote(self.bodies[role])} "
                    f"sh -lc {shlex.quote(cmd)}", timeout=timeout)
+
+    # -- the Frontier: colonies, a sacrificial land on the internal dome ------
+    # A colony is where FETCHED things run — code carried home through the one
+    # gate. It lives on the same internal network as the bodies: NO egress,
+    # ever. The land is fed through the gate, never around it.
+
+    def colony_name(self, name: str) -> str:
+        return f"mor-{self._slug(self.space.name)}-frontier-{self._slug(name)}"
+
+    def colony_dir(self, name: str) -> Path:
+        return self.space.root / "colonies" / self._slug(name)
+
+    def colonize(self, name: str, timeout: int = 600):
+        """Raise a colony. Returns (ok, container_name, message)."""
+        if not self.runtime:
+            self.runtime = probe_runtime()
+        if not self.runtime:
+            return False, "", "no container runtime — the frontier cannot be raised"
+        rt, net = self.runtime, self.network()
+        cname = self.colony_name(name)
+        _sh(f"{rt} network create --internal {shlex.quote(net)} 2>/dev/null || true")
+        if _sh(f"{rt} ps --filter name=^{shlex.quote(cname)}$ "
+               f"--format '{{{{.Names}}}}'")[1].strip() == cname:
+            return True, cname, "the colony already stands"
+        # A stopped namesake is a husk — clear it so the colony can take the name.
+        _sh(f"{rt} rm -f {shlex.quote(cname)} 2>/dev/null || true")
+        ws = self.colony_dir(name)
+        ws.mkdir(parents=True, exist_ok=True)
+        cmd = (f"{rt} run -d --name {shlex.quote(cname)} "
+               f"--network {shlex.quote(net)} "
+               # The same leash as a body: no caps, no escalation, bounded
+               # memory/CPU/PIDs — the land serves the host, never starves it.
+               f"--cap-drop ALL --security-opt no-new-privileges "
+               f"--memory 512m --cpus 1 --pids-limit 256 "
+               f"--label mor.colony={shlex.quote(self._slug(name))} "
+               f"--label mor.space={shlex.quote(self.space.name)} "
+               f"-v {shlex.quote(str(ws))}:/work -w /work "
+               f"{shlex.quote(IMAGE)} sleep infinity")
+        rc, _, err = _sh(cmd, timeout=timeout)
+        if rc != 0:
+            return False, "", f"the colony failed to rise: {err.strip()[-120:]}"
+        return True, cname, f"the colony stands as {cname}"
+
+    def colonies(self) -> list:
+        """Slugs of the living colonies."""
+        if not self.runtime:
+            return []
+        rc, out, _ = _sh(
+            f"{self.runtime} ps --filter label=mor.space={shlex.quote(self.space.name)} "
+            f"--filter label=mor.colony --format '{{{{.Names}}}}'")
+        if rc != 0:
+            return []
+        return sorted(n.rsplit("-frontier-", 1)[-1] for n in out.split()
+                      if "-frontier-" in n)
+
+    def frontier_exec(self, name: str, cmd: str, timeout: int = 120):
+        """Run a command in a standing colony. Returns (rc, out, err) and logs
+        every operation to the colony's ops.jsonl — the territory remembers."""
+        if not self.runtime:
+            self.runtime = probe_runtime()
+        if not self.runtime:
+            return 127, "", "no container runtime"
+        cname = self.colony_name(name)
+        living = _sh(f"{self.runtime} ps --filter name=^{shlex.quote(cname)}$ "
+                     f"--format '{{{{.Names}}}}'")[1].strip()
+        if living != cname:
+            return 127, "", f"no standing colony '{name}'"
+        rc, out, err = _sh(f"{self.runtime} exec -w /work {shlex.quote(cname)} "
+                           f"sh -lc {shlex.quote(cmd)}", timeout=timeout)
+        try:
+            ops = self.colony_dir(name) / "ops.jsonl"
+            ops.parent.mkdir(parents=True, exist_ok=True)
+            with ops.open("a") as f:
+                f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                    "cmd": cmd, "rc": rc,
+                                    "out": (out or err or "")[-2000:]}) + "\n")
+        except OSError:
+            pass  # logging never breaks the operation
+        return rc, out, err
+
+    def raze(self, name: str):
+        """Pull the colony's container down. The ground (the colony dir) and its
+        record (the territory module) stay — raze is never erase."""
+        if not self.runtime:
+            self.runtime = probe_runtime()
+        if not self.runtime:
+            return False, "no container runtime"
+        _sh(f"{self.runtime} rm -f {shlex.quote(self.colony_name(name))} 2>/dev/null || true")
+        return True, f"the colony '{self._slug(name)}' is razed — its ground and record stay"
 
     def down(self, roles: list | None = None) -> None:
         """Harvest then remove the bodies (bodies die nightly, the record stays)."""

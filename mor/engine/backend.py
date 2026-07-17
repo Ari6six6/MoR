@@ -16,12 +16,58 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
 
 from mor.config import gpu_state_path, load_json
+
+
+_LOOP_MARK = " (— the line ran wild; the realm cut it)"
+_SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+
+
+def cut_loops(text: str) -> str:
+    """The degenerate-repetition guard.
+
+    A small mind can fall into a loop and pour the same sentence out until the
+    token budget is gone — the wild line then sits in the Hall and poisons every
+    prompt that reads the day after it. Cut the text after the FIRST occurrence
+    of any sentence (24+ chars, normalized) that is said three times or more;
+    and catch the punctuation-free twin — the same 12–80-char unit repeated
+    three times or more at the tail. No loop, no cut: ordinary text (and honest
+    repetition said once or twice) passes through untouched.
+    """
+    if not text:
+        return text
+    counts: dict = {}
+    for part in _SENT_SPLIT.split(text):
+        norm = " ".join(part.lower().split())
+        if len(norm) < 24:
+            continue
+        counts[norm] = counts.get(norm, 0) + 1
+        if counts[norm] == 3:
+            first = text.find(part)
+            if first >= 0:
+                return text[: first + len(part)].rstrip() + _LOOP_MARK
+    # The punctuation-free twin: the same 12–80-char unit tiling the tail. The
+    # check is anchored at the end (exact copies, shortest unit first), then
+    # the run is walked back to where it truly began — a loop that started
+    # pages ago is cut at its source, not somewhere mid-stream.
+    body = text.rstrip()
+    n = len(body)
+    for u in range(12, 81):
+        if n < 3 * u:
+            break
+        unit = body[n - u:]
+        if body[n - 3 * u:] == unit * 3:
+            start = n
+            while start - u >= 0 and body[start - u:start] == unit:
+                start -= u
+            return body[:start + u].rstrip() + _LOOP_MARK
+    return text
 
 
 @dataclass
@@ -43,6 +89,12 @@ class Backend:
     def chat(self, messages: list, tools: list | None = None) -> ChatResult:
         raise NotImplementedError
 
+    def embed(self, texts: list) -> list | None:
+        """Embedding vectors for the Ontology, if this mind can serve them.
+        None means 'no embeddings here' — callers fall back to the honest
+        hashed vector, never crash."""
+        return None
+
 
 # --------------------------------------------------------------------------
 class ServedBackend(Backend):
@@ -56,6 +108,9 @@ class ServedBackend(Backend):
         sampling = state.get("sampling") or {}
         self.temperature = sampling.get("temperature", 0.6)
         self.top_p = sampling.get("top_p", 0.95)
+        # A light repeat penalty at the source: the server's own sampler leans
+        # against falling into the loop cut_loops would otherwise have to cut.
+        self.repeat_penalty = float(sampling.get("repeat_penalty", 1.1))
         self.max_tokens = int(state.get("max_completion_tokens", 4096))
 
     def _post(self, body: dict) -> dict:
@@ -70,6 +125,7 @@ class ServedBackend(Backend):
     def chat(self, messages: list, tools: list | None = None) -> ChatResult:
         body = {"model": self.model, "messages": messages,
                 "temperature": self.temperature, "top_p": self.top_p,
+                "repeat_penalty": self.repeat_penalty,
                 "max_tokens": self.max_tokens}
         if tools:
             body["tools"] = tools
@@ -85,13 +141,32 @@ class ServedBackend(Backend):
                                   tc["function"]["name"],
                                   tc["function"].get("arguments") or "{}")
                          for i, tc in enumerate(msg.get("tool_calls") or [])]
-                return ChatResult(content=msg.get("content"), tool_calls=calls)
+                # Whatever the sampler let through still passes the guard — a
+                # wild line is cut before it can reach the Hall.
+                return ChatResult(content=cut_loops(msg.get("content")),
+                                  tool_calls=calls)
             except Exception as e:  # noqa: BLE001 — a flaky oracle must never crash the realm
                 last = e
         # Every attempt failed: speak the failure into the Hall, don't raise.
         return ChatResult(content=f"(the oracle did not answer — "
                                   f"{type(last).__name__}: {str(last)[:120]}. "
                                   "Check `gpu status`.)")
+
+    def embed(self, texts: list) -> list | None:
+        """OpenAI-compatible /embeddings (vLLM and llama.cpp both serve it).
+        Any failure → None, and the Ontology walks its offline path instead."""
+        try:
+            data = json.dumps({"model": self.model, "input": texts}).encode()
+            req = urllib.request.Request(
+                f"{self.base_url}/embeddings", data=data,
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {self.api_key}"})
+            with urllib.request.urlopen(req, timeout=min(self.timeout, 120)) as resp:
+                payload = json.loads(resp.read().decode("utf-8", "replace"))
+            rows = sorted(payload.get("data") or [], key=lambda d: d.get("index", 0))
+            return [r.get("embedding") for r in rows]
+        except Exception:  # noqa: BLE001 — embeddings are a bonus, never a fault
+            return None
 
 
 # --------------------------------------------------------------------------
@@ -181,6 +256,9 @@ def flavored_line(role: str, kind: str, heard: str = "") -> str:
                              "Here is where we stand. Your word?"],
         "chant": ["A short day, a long thought — / the seer dreamed, the general weighed, / "
                   "the warrior walked the wire and came home whole. / Sleep now, wake new."],
+        "retrospect": ["I looked back over the day. What we learned how to do, I set "
+                       "on the shelf; the rest, the night keeps."],
+        "delegate": ["The hands did their brief and reported back."],
         "inside_wall": ["Today I was true to what I am. I spoke plainly and hid nothing. "
                         "I am the one who sees; tomorrow I will see further."],
         "outside_wall": ["The General is hard on me, and I've come to trust it. The Warrior is "

@@ -52,8 +52,31 @@ def conn_args(ssh_args: list) -> list:
     return out
 
 
+def replace_forward(ssh_args: list, new_remote_port: int) -> list:
+    """The same ssh args with the `-L` forward's box-side port swapped — when
+    the launch slides the server to a free port, the tunnel must follow it."""
+    out = list(ssh_args)
+    for i, a in enumerate(out):
+        if a == "-L" and i + 1 < len(out):
+            bits = out[i + 1].split(":")
+            if len(bits) in (2, 3):
+                bits[-1] = str(new_remote_port)
+                out[i + 1] = ":".join(bits)
+            return out
+        if a.startswith("-L") and len(a) > 2:
+            bits = a[2:].split(":")
+            if len(bits) in (2, 3):
+                bits[-1] = str(new_remote_port)
+                out[i] = "-L" + ":".join(bits)
+            return out
+    return out
+
+
 def parse_forward(ssh_args: list):
-    """(local_port, remote_host, remote_port) from a `-L lp:host:rp` forward."""
+    """(local_port, remote_host, remote_port) from a `-L lp:host:rp` forward.
+
+    Returns None for anything malformed — a pasted ssh line must never take
+    the shell down with it."""
     val = ""
     for i, a in enumerate(ssh_args):
         if a == "-L" and i + 1 < len(ssh_args):
@@ -65,11 +88,18 @@ def parse_forward(ssh_args: list):
     if not val:
         return None
     bits = val.split(":")
-    if len(bits) == 3:
-        return int(bits[0]), bits[1], int(bits[2])
-    if len(bits) == 2:  # lp:rp -> localhost
-        return int(bits[0]), "127.0.0.1", int(bits[1])
-    return None
+    try:
+        if len(bits) == 3:
+            lp, host, rp = int(bits[0]), bits[1], int(bits[2])
+        elif len(bits) == 2:  # lp:rp -> localhost
+            lp, host, rp = int(bits[0]), "127.0.0.1", int(bits[1])
+        else:
+            return None
+    except ValueError:
+        return None
+    if not host or not (1 <= lp <= 65535) or not (1 <= rp <= 65535):
+        return None
+    return lp, host, rp
 
 
 _SSH_OPTS = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
@@ -236,16 +266,31 @@ def _clear_stale_and_check_port(cargs: list, port: int) -> str:
     return out.strip()
 
 
-def launch(cargs: list, spec: ModelSpec, tp, max_len, util, port: int, log) -> None:
+def launch(cargs: list, spec: ModelSpec, tp, max_len, util, port: int, log,
+           auto_port: bool = False) -> int:
+    """Install the runtime and launch the server. Returns the box-side port the
+    server actually bound — with `auto_port`, a held port slides to a free one
+    (and the caller slides the tunnel forward with it) instead of failing."""
     if server_running(cargs):
         log(ui.yellow("  a model server is already running on the box "
                       "(gpu down to relaunch)."))
-        return
+        return port
     if spec.server == "llama_cpp":
         _install_llama(cargs, log)
         _register_cuda_libs(cargs)  # so llama-server finds libcudart/libcublas on exec
         held = _clear_stale_and_check_port(cargs, port)
-        if held:
+        if held and auto_port:
+            # The magic: don't make the Master re-type the forward — slide the
+            # box-side port ourselves and report where the server landed.
+            alt = port + 10000 if port < 55535 else 8000
+            if _clear_stale_and_check_port(cargs, alt):
+                raise ProvisionError(
+                    f"ports {port} and {alt} are both held on the box — pick a "
+                    "free remote port for your -L forward by hand.")
+            log(ui.yellow(f"  port {port} is held on the box — sliding the "
+                          f"server to {alt} (your local side stays as is)."))
+            port = alt
+        elif held:
             alt = port + 10000 if port < 55535 else 8000
             raise ProvisionError(
                 f"port {port} on the box is already held by another service — the "
@@ -267,6 +312,7 @@ def launch(cargs: list, spec: ModelSpec, tp, max_len, util, port: int, log) -> N
                      " > ~/vllm.log 2>&1 & echo $! > ~/vllm.pid", timeout=60)
     if rc != 0:
         raise ProvisionError(f"launch failed: {err.strip()[-400:]}")
+    return port
 
 
 def stop(cargs: list) -> None:
